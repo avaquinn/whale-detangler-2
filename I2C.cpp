@@ -55,9 +55,7 @@ bool i2c_read(uint8_t addr, uint8_t reg, size_t n, uint8_t *buffer){
         return false;  // did not receive expected bytes
     }
 
-  // for (int i = 0, i < n, i++){
-  //   buffer[i] = Wire.read();
-  // }
+// still working on this
 
 
 }
