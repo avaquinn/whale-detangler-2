@@ -41,7 +41,7 @@ namespace Pins {
   constexpr uint8_t LED_YELLOW = 7; //D7
 
   //Pyro control
-  constexpr uint8_t PYRO_CHRG = A1; //A1 or D15
+  constexpr uint8_t PYRO_CHG = A1; //A1 or D15
   constexpr uint8_t PYRO_FIRE = A2; //A2 or D16
 }
 
@@ -76,7 +76,7 @@ namespace Pyro {
   constexpr uint16_t MIN_CHARGE_MS = 2000; //>= 2s charge window
 
   //maximum time we will keep charging before aborting (prevents endless charge state)
-  constexpr uint16_t MAX_CHARGE_MS = 1; //TODO
+  constexpr uint16_t MAX_CHARGE_MS = 6000; //TODO
 
   //maximum fire pulse width; TODO: might not need this, I think it's handled on pyro board
   // constexpr uint16_t FIRE_PULSE_MS = 10; //<= 10ms
@@ -87,15 +87,27 @@ namespace Pyro {
 
 namespace Logging {
   //total amount of bytes in FRAM
-  constexpr uint32_t FRAM_TOTAL_BYTES = 262144UL
+  constexpr uint32_t FRAM_TOTAL_BYTES = 262144UL;
 
-  //reserve small header region for meatdata?
+  //reserve small header region for metadata
   constexpr uint16_t HEADER_BYTES = 256;
 
   //where records begin
   constexpr uint32_t DATA_START_ADDR = HEADER_BYTES;
 
   // constexpr uint16_t MAX_RECORD_BYTES = 64; TODO: max record size to simplify buffering?
+}
+
+namespace DeviceInfo {
+  //serial is a human-readable ID like "18.09.10001" (YY.MM.1000X format)
+  //should be stored once in FRAM header (or set during programming), not logged every sample
+  constexpr uint8_t BOARD_SERIAL_MAX_LEN = 16; //plenty for "YY.MM.1000X" + null terminator
+
+  //compile-time placeholder, set this during programming and write it to FRAM header
+  constexpr char BOARD_SERIAL_DEFAULT[] = "UNSET";
+  
+  //firmware version
+  constexpr char FW_VERSION_STR[] = "0.1.0";
 }
 
 namespace Detector {
@@ -108,5 +120,23 @@ namespace Detector {
   //maximum time to wait in charge-confirm stage before forcing an abort
   constexpr uint16_t CHARGE_CONFIRM_TIMEOUT_MS = Pyro::MAX_CHARGE_MS;
 }
+
+namespace CycleCfg { //placeholders until we decide pressure units (raw ADC vs converted)
+  //we can start using ADC thresholds, then switch to PSI/ft once calibrated.
+  constexpr uint16_t START_PRESSURE_ADC = 0; // TODO: set after calibration
+  constexpr uint16_t END_PRESSURE_ADC = 0; // TODO: set after calibration
+
+  //debounce times so noise doesn’t create fake cycles
+  constexpr uint16_t START_DEBOUNCE_MS = 2000;
+  constexpr uint16_t END_HOLD_MS = 5000;
+}
+
+// namespace ProfileCfg { //profile capture during DROP and RETRIEVAL:
+//   // - We’ll log a summary always.
+//   // - Optionally log this many raw samples around the event (kept small for FRAM).
+//   constexpr uint16_t RAW_PROFILE_HZ = 50;        // matches charge-window sample rate
+//   constexpr uint16_t DROP_RAW_SAMPLES = 200;     // 4 seconds @ 50 Hz
+//   constexpr uint16_t RETR_RAW_SAMPLES = 200;     // 4 seconds @ 50 Hz
+// }
 
 #endif
