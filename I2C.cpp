@@ -3,83 +3,88 @@
   - Provides simple register read/write helpers with optional retries/timeouts
   - Used primarily by the battery fuel gauge
 */
-# include "I2C.h"
+#include "I2C.h"
 
-// The I2C peripheral initialized. Using the built in wrapper to initialize the SDA (A4) & SCL (A5) pins
-void i2c_init(){
-  // pins A4 and A5 are now set up for I2C communication. No need to maually set them using pinmodes
-    Wire.begin();
+//initialize I2C peripheral and set clock speed
+void i2c_init() {
+  Wire.begin(); //enable I2C peripheral (joins bus as controller)
+  Wire.setClock(400000); //set I2C clocl to 400 kHz (fast mode)
 }
 
-
-// I2C write function 8 for 8 bit registers--> bool so we know if the data transmission was successful or not
-// So far only writing one byte at a time. Assuming we will read from fuel gague majority of the times so as of right now only writing one byte at a time. We can fix it later if we want to write in a loop
-/* varaible:
-  addr = device address
-  reg = internal regsiters in gague to write to for probably alerts
-  data = data to write to these registers
+//writes a 16-bit value to a device register over I2C (MSB first)
+/*
+Input:
+  addr = 7-bit I2C device address
+  reg = register address inside the device to write to
+  data = 16-bit register value to write
+  retries = number of retries after the first attempt
+Output:
+  true = the write transaction completes successfully
+  false = all attempts to write fail
 */
-// bool i2c_write8(uint8_t addr, uint8_t reg, uint8_t data){
+bool i2c_write(uint8_t addr, uint8_t reg, uint16_t data, uint8_t retries) {
+  for (uint8_t attempt = 0; attempt <= retries; attempt++) {
+    Wire.beginTransmission(addr); //START + send address + write bit
+    Wire.write(reg); //send the internal register address we want to write
 
-//   // take care of Start condition, sending device address, Write bit, ACK bit. Now ready to write
-//   Wire.beginTransmission(addr);
+    //send data
+    Wire.write((uint8_t)((data >> 8) & 0xFF)); //MSB
+    Wire.write((uint8_t)(data & 0xFF)); //LSB
 
-//   // pass in the internal register address to write to
-//   Wire.write(reg);
-//   // Now that we have the internal register set, we can write to it.
-//   Wire.write(data);
-
-
-// // check if the end of transmission was successfully closed
-//   int transmission_status = 0;
-//   transmission_status = Wire.endTransmission();
-
-// // checks is transmission was successfully closed, after successfully starting
-//   return (transmission_status == 0);
-// }
-
-
-bool i2c_write16(uint8_t addr, uint8_t reg, uint16_t data){
-
-  // take care of Start condition, sending device address, Write bit, ACK bit. Now ready to write
-  Wire.beginTransmission(addr);
-
-  // pass in the internal register address to write to
-  Wire.write(reg);
-  // Now that we have the internal register set, we can write to it.
-  uint8_t msb = ((data >> 8) & 0xFF);
-  Wire.write(msb);
-  uint8_t lsb = data & 0xFF;
-  Wire.write(lsb);
-
-
-// check if the end of transmission was successfully closed
-  int transmission_status = 0;
-  transmission_status = Wire.endTransmission();
-
-// checks is transmission was successfully closed, after successfully starting
-  return (transmission_status == 0);
-}
-
-
-
-bool i2c_read(uint8_t addr, uint8_t reg, size_t n, uint8_t *buffer){
-  /* begin transmission, have to be in write mode first, but by passing in false
-  into endTransmission we can to a repetaed Start, Not Stop */
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.endTransmission(false);
-
-  // Start reading from the device n bytes look into that in datasheet.
-  size_t bytes_read;
-  bytes_read = Wire.requestFrom(addr, n);
-
-  if (bytes_read != n) {
-        return false;  // did not receive expected bytes
+    uint8_t status = Wire.endTransmission(true); //send STOP
+    if (status == 0) { //check for success
+      return true;
     }
 
-// still working on this
+    delay(2); //short pause before retry
+  }
 
-
+  return false; //all attempts fail
 }
 
+//read a 16-bit tregister value over I2C (MSB first)
+/*
+Input:
+  addr = 7-bit I2C device address
+  reg = register address inside the device to read from
+  data = reference to where the 16-bit result will be stored
+  retries = number of retries after the first attempt
+Output:
+  true = exactly 2 bytes were read and combined successfully
+  false = all attempts to read fail
+*/
+bool i2c_read(uint8_t addr, uint8_t reg, uint16_t &out, uint8_t retries) {
+  for (uint8_t attempt = 0; attempt <= retries; attempt++) {
+    //tell device which register we want to read
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+
+    uint8_t status = Wire.endTransmission(false); //send REPEATED START for read
+    if (status != 0) { //check for success
+      //something went wrong, retry
+      delay(2);
+      continue;
+    }
+
+    //request 2 bytes from the device
+    size_t received = Wire.requestFrom(addr, 2);
+    if (received != 2) { //check for success
+      //drain any leftover bytes so next attempt starts clean
+      while (Wire.available()) {
+        (void)Wire.read(); //discard byte
+      }
+
+      delay(2);
+      continue;
+    }
+
+    //read and combine MSB first
+    uint8_t msb = (uint8_t)Wire.read();
+    uint8_t lsb = (uint8_t)Wire.read();
+    out = (uint16_t(msb) << 8) | uint16_t(lsb);
+    
+    return true; //success
+  }
+
+  return false; //all attempts failed
+}
