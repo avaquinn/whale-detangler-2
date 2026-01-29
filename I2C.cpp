@@ -12,14 +12,34 @@ void i2c_init(){
 }
 
 
-// I2C write function --> bool so we know if the data transmission was successful or not
+// I2C write function 8 for 8 bit registers--> bool so we know if the data transmission was successful or not
 // So far only writing one byte at a time. Assuming we will read from fuel gague majority of the times so as of right now only writing one byte at a time. We can fix it later if we want to write in a loop
 /* varaible:
   addr = device address
   reg = internal regsiters in gague to write to for probably alerts
   data = data to write to these registers
 */
-bool i2c_write(uint8_t addr, uint8_t reg, uint8_t data){
+// bool i2c_write8(uint8_t addr, uint8_t reg, uint8_t data){
+
+//   // take care of Start condition, sending device address, Write bit, ACK bit. Now ready to write
+//   Wire.beginTransmission(addr);
+
+//   // pass in the internal register address to write to
+//   Wire.write(reg);
+//   // Now that we have the internal register set, we can write to it.
+//   Wire.write(data);
+
+
+// // check if the end of transmission was successfully closed
+//   int transmission_status = 0;
+//   transmission_status = Wire.endTransmission();
+
+// // checks is transmission was successfully closed, after successfully starting
+//   return (transmission_status == 0);
+// }
+
+
+bool i2c_write16(uint8_t addr, uint8_t reg, uint16_t data){
 
   // take care of Start condition, sending device address, Write bit, ACK bit. Now ready to write
   Wire.beginTransmission(addr);
@@ -27,7 +47,10 @@ bool i2c_write(uint8_t addr, uint8_t reg, uint8_t data){
   // pass in the internal register address to write to
   Wire.write(reg);
   // Now that we have the internal register set, we can write to it.
-  Wire.write(data);
+  uint8_t msb = ((data >> 8) & 0xFF);
+  Wire.write(msb);
+  uint8_t lsb = data & 0xFF;
+  Wire.write(lsb);
 
 
 // check if the end of transmission was successfully closed
@@ -36,8 +59,8 @@ bool i2c_write(uint8_t addr, uint8_t reg, uint8_t data){
 
 // checks is transmission was successfully closed, after successfully starting
   return (transmission_status == 0);
-
 }
+
 
 
 bool i2c_read(uint8_t addr, uint8_t reg, size_t n, uint8_t *buffer){
