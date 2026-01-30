@@ -50,13 +50,6 @@ namespace I2CDevices {
   constexpr uint8_t MAX17048_ADDR = 0x36;
 }
 
-namespace SPIParams {
-  constexpr uint32_t SLOW_HZ = 1000000; //1MHz
-  constexpr uint32_t FAST_HZ = 4000000; //4MHz
-  constexpr uint8_t MODE0 = 0; //ADXL and FRAM
-  constexpr uint8_t MODE3 = 3; //FRAM
-}
-
 namespace Timing { //TODO: adjust later for power and responsiveness
   //main sensor sample period during normal monitoring
   constexpr uint16_t SAMPLE_PERIOD_MS = 200;//5Hz
