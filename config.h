@@ -59,9 +59,6 @@ namespace Timing { //TODO: adjust later for power and responsiveness
 
   //after enabling PFET, allow signal chain to settle (amp + filters + bridge supply)
   constexpr uint16_t PRESSURE_SETTLE_MS = 10;
-
-  //debounce/minimum time between status LED updates (prevents flicker)
-  constexpr uint16_t STATUS_TICK_MS = 50;
 }
 
 namespace Pyro {
