@@ -33,9 +33,9 @@ static uint32_t phase_start_ms = 0; //start time of current blink phase
 static bool phase_on = false; //current on/off phase state
 
 //Timing constants
-constexpr uint16_t BLINK_SLOW_MS = 500;
-constexpr uint16_t BLINK_FAST_MS = 250;
-constexpr uint16_t STATUS_TICK_MS = 50; //debounce/minimum time between status LED updates (prevents flicker)
+static constexpr uint16_t BLINK_SLOW_MS = 500;
+static constexpr uint16_t BLINK_FAST_MS = 250;
+static constexpr uint16_t STATUS_TICK_MS = 50; //debounce/minimum time between status LED updates (prevents flicker)
 
 //reset pattern timing whenever we switch “modes”
 static inline void reset_phase(uint32_t now_ms) {

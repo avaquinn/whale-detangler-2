@@ -6,6 +6,7 @@
 */
 #include <Arduino.h>
 #include <stdint.h>
+#include "config.h"
 
 enum class DeviceState : uint8_t { //high-level device state
   BOOT = 0,
@@ -58,7 +59,7 @@ struct __attribute__((packed)) SensorSnapshot {
   BatterySnapshot batt; //battery state
 
   uint16_t flags; //context flags
-}
+};
 
 enum SnapshotFlags : uint16_t { //sensor snapshot flags
   SNAP_VALID_ACCEL    = (1 << 0),
@@ -81,7 +82,7 @@ struct __attribute__((packed)) AccelProfile {
 
   //RMS magnitude proxy (fixed-point), store RMS * 100 for extra precision without floats.
   uint16_t rms_mag_x100;
-}
+};
 
 struct __attribute__((packed)) CycleSummary {
   uint32_t cycle_idx; //monotonically increasing cycle count
@@ -98,7 +99,7 @@ struct __attribute__((packed)) CycleSummary {
   //accelerometer profiles
   AccelProfile drop;
   AccelProfile retrieval;
-}
+};
 
 enum class LogRecordType : uint8_t {
   BOOT = 0,
@@ -139,6 +140,6 @@ struct __attribute__((packed)) BootRecord { //set information at boot
   uint32_t t_ms;
   char board_serial[DeviceInfo::BOARD_SERIAL_MAX_LEN];
   char fw_version[12];
-}
+};
 
 #endif

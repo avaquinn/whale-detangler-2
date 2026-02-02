@@ -45,11 +45,6 @@ namespace Pins {
   constexpr uint8_t PYRO_FIRE = A2; //A2 or D16
 }
 
-namespace I2CDevices {
-  //0x6C for write, 0x6D for read; need to shift left and add bit to the right
-  constexpr uint8_t MAX17048_ADDR = 0x36;
-}
-
 namespace Timing { //TODO: adjust later for power and responsiveness
   //main sensor sample period during normal monitoring
   constexpr uint16_t SAMPLE_PERIOD_MS = 200;//5Hz
