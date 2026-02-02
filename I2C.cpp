@@ -4,11 +4,14 @@
   - Used primarily by the battery fuel gauge
 */
 #include "I2C.h"
+#include <Wire.h>
 
 //initialize I2C peripheral and set clock speed
 void i2c_init() {
-  Wire.begin(); //enable I2C peripheral (joins bus as controller)
-  Wire.setClock(400000); //set I2C clocl to 400 kHz (fast mode)
+  //enable I2C peripheral (joins bus as controller)
+  Wire.begin();
+  //set I2C clock to 400 kHz (fast mode)
+  Wire.setClock(400000);
 }
 
 //writes a 16-bit value to a device register over I2C (MSB first)
@@ -24,8 +27,10 @@ Output:
 */
 bool i2c_write(uint8_t addr, uint8_t reg, uint16_t data, uint8_t retries) {
   for (uint8_t attempt = 0; attempt <= retries; attempt++) {
-    Wire.beginTransmission(addr); //START + send address + write bit
-    Wire.write(reg); //send the internal register address we want to write
+    //START + send address + write bit
+    Wire.beginTransmission(addr);
+    //send the internal register address we want to write
+    Wire.write(reg);
 
     //send data
     Wire.write((uint8_t)((data >> 8) & 0xFF)); //MSB
@@ -58,9 +63,11 @@ bool i2c_read(uint8_t addr, uint8_t reg, uint16_t &out, uint8_t retries) {
     //tell device which register we want to read
     Wire.beginTransmission(addr);
     Wire.write(reg);
-
-    uint8_t status = Wire.endTransmission(false); //send REPEATED START for read
-    if (status != 0) { //check for success
+    
+    //send REPEATED START for read
+    uint8_t status = Wire.endTransmission(false);
+    //check for success
+    if (status != 0) {
       //something went wrong, retry
       delay(2);
       continue;
@@ -68,7 +75,8 @@ bool i2c_read(uint8_t addr, uint8_t reg, uint16_t &out, uint8_t retries) {
 
     //request 2 bytes from the device
     size_t received = Wire.requestFrom(addr, 2);
-    if (received != 2) { //check for success
+    //check for success
+    if (received != 2) {
       //drain any leftover bytes so next attempt starts clean
       while (Wire.available()) {
         (void)Wire.read(); //discard byte

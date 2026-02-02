@@ -6,7 +6,6 @@
 */
 #include <Arduino.h>
 #include <stdint.h>
-#include "config.h"
 
 enum class DeviceState : uint8_t { //high-level device state
   BOOT = 0,
