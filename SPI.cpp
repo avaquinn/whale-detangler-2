@@ -4,8 +4,9 @@
   - Provides safe per-device transactions (clock/mode) and chip-select discipline
   - Used by SPI peripherals (accelerometer and FRAM)
 */
-#include "SPI.h"
+#include <Arduino.h>
 #include <SPI.h>
+#include "SPI.h"
 
 static constexpr uint32_t SPI_CLOCK_HZ = 4000000UL; //4 MHz
 

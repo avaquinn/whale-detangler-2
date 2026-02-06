@@ -4,8 +4,6 @@
   Shared data types used across modules
   - Defines structs/enums for a sensor snapshot, device states, event codes, and detector outputs
 */
-#include <Arduino.h>
-#include <stdint.h>
 #include "config.h"
 
 enum class DeviceState : uint8_t { //high-level device state

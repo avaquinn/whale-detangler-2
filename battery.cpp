@@ -4,7 +4,9 @@
   - Configures/handles ALERT behavior
   - Provides a compact battery snapshot for logging and UI/status updates
 */
+#include <Arduino.h>
 #include "battery.h"
+#include "I2C.h"
 
 //MAX17048 register addresses
 static constexpr uint8_t REG_VCELL = 0x02; //ADC measurement of VCELL (R)
@@ -28,18 +30,18 @@ static constexpr uint8_t I2C_RETRIES = 2;
 //Bit masks
 //STATUS (0x1A) MSB contains: X EnVR SC HD VR VL VH RI    X...
 //CONFIG (0x0C) LSB contains: SLEEP ALSC ALRT ATHD[4:0]
-static constexpr uint16_t STATUS_RI = (1u << 8); //bit8 (MSB bit0), anytime the bit is set, the IC is not configured
-static constexpr uint16_t STATUS_VH = (1u << 9); //bit9, set when VCELL has been above VALRT.MAX
-static constexpr uint16_t STATUS_VL = (1u << 10); //bit10, set when VCELL has been below VALRT.MIN
-static constexpr uint16_t STATUS_VR = (1u << 11); //bit11, set after the device has been reset if EnVr is set
-static constexpr uint16_t STATUS_HD = (1u << 12); //bit12, set when SOC crosses the value in CONFIG.ATHD
-static constexpr uint16_t STATUS_SC = (1u << 13); //bit13, set when SOC changes by at least 1% if CONFIG.ALSC is set
-static constexpr uint16_t STATUS_ENVR = (1u << 14); //bit14, when set to 1, asserts the ALRT pin when a voltage-reset event occurs under the
-                                                    //conditions described by the VRESET/ID register
+static constexpr uint16_t STATUS_RI = (1 << 8); //bit8 (MSB bit0), anytime the bit is set, the IC is not configured
+static constexpr uint16_t STATUS_VH = (1 << 9); //bit9, set when VCELL has been above VALRT.MAX
+static constexpr uint16_t STATUS_VL = (1 << 10); //bit10, set when VCELL has been below VALRT.MIN
+static constexpr uint16_t STATUS_VR = (1 << 11); //bit11, set after the device has been reset if EnVr is set
+static constexpr uint16_t STATUS_HD = (1 << 12); //bit12, set when SOC crosses the value in CONFIG.ATHD
+static constexpr uint16_t STATUS_SC = (1 << 13); //bit13, set when SOC changes by at least 1% if CONFIG.ALSC is set
+static constexpr uint16_t STATUS_ENVR = (1 << 14); //bit14, when set to 1, asserts the ALRT pin when a voltage-reset event occurs under the
+                                                   //conditions described by the VRESET/ID register
 
-static constexpr uint16_t CONFIG_ALSC = (1u << 6); //bit6, enables alerting when SOC changes by at least 1%
-static constexpr uint16_t CONFIG_ALRT = (1u << 5); //bit5, set by the IC when an alert occurs (ALRT pins asserts low)
-static constexpr uint16_t CONFIG_ATHD_MASK = 0x001Fu; //bits0..4 in LSB, sets the SOC threshold
+static constexpr uint16_t CONFIG_ALSC = (1 << 6); //bit6, enables alerting when SOC changes by at least 1%
+static constexpr uint16_t CONFIG_ALRT = (1 << 5); //bit5, set by the IC when an alert occurs (ALRT pins asserts low)
+static constexpr uint16_t CONFIG_ATHD_MASK = 0x001F; //bits0..4 in LSB, sets the SOC threshold
 
 static volatile bool alert_irq = false; //interrupt flag
 static void battery_alert_isr() { //ISR: just record that the ALRT pin fired

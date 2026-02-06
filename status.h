@@ -1,9 +1,6 @@
 #ifndef STATUS_H
 #define STATUS_H
 
-#include <Arduino.h>
-#include "config.h"
-
 //battery display states
 enum class BatteryDisplay : uint8_t {
   MORE_THAN_30_DAYS = 0, //green solid

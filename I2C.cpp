@@ -3,8 +3,9 @@
   - Provides simple register read/write helpers with optional retries/timeouts
   - Used primarily by the battery fuel gauge
 */
-#include "I2C.h"
+#include <Arduino.h>
 #include <Wire.h>
+#include "I2C.h"
 
 //initialize I2C peripheral and set clock speed
 void i2c_init() {

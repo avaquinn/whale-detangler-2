@@ -6,7 +6,6 @@
   - Contains tunable constants: sample rates, timing delays (settle/charge), thresholds,
     logging settings (record version/size), and debug options
 */
-#include <Arduino.h>
 
 #define DEBUG_SERIAL 1 //Serial prints for debugging
 #define DEBUG_BAUD 115200

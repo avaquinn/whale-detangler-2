@@ -1,11 +1,7 @@
 #ifndef BATTERY_H
 #define BATTERY_H
 
-#include <Arduino.h>
-#include <stdint.h>
-#include "config.h"
 #include "types.h"
-#include "I2C.h"
 
 //alert result structure
 struct BatteryAlerts {

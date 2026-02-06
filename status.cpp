@@ -3,7 +3,9 @@
   - Provides simple APIs for setting device indication states (OK / warning / fault / activity)
   - Implements non-blocking blink patterns using timestamps (no delay()-heavy logic)
 */
+#include <Arduino.h>
 #include "status.h"
+#include "config.h"
 
 //LED helper functions
 static inline void led_write(uint8_t pin, bool on) {
