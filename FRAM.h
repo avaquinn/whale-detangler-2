@@ -3,8 +3,10 @@
 
 #include "config.h"
 
-void fram_driver(void);
-void fram_write(uint32_t addr, const uint8_t *data, size_t length);
-void fram_read(uint32_t addr, uint8_t *data, size_t length);
+void fram_init();
+bool fram_write(uint32_t addr, const uint8_t *src, size_t len);
+bool fram_read(uint32_t addr, uint8_t *dst, size_t len);
+uint8_t fram_read_status(); //RDSR
+void fram_write_disable(); //WRDI (guard)
 
 #endif

@@ -4,91 +4,102 @@
   - Provides reliable nonvolatile storage primitives for the logger
   - Used for ring-buffer recording
 */
-#include <SPI.h>
+#include <Arduino.h>
 #include "SPI.h"
 #include "FRAM.h"
 
-using Pins::FRAM_CS;
+//total amount of bytes in FRAM
+static constexpr uint32_t FRAM_TOTAL_BYTES = 262144UL;
 
+//opcodes
+static constexpr uint8_t CMD_WREN = 0x06; //write enable
+static constexpr uint8_t CMD_WRDI = 0x04; //write disable
+static constexpr uint8_t CMD_RDSR = 0x05; //read status register
+static constexpr uint8_t CMD_WRSR = 0x01; //write status register
+static constexpr uint8_t CMD_WRITE = 0x02; //write memory
+static constexpr uint8_t CMD_READ = 0x03; //read memory
 
-  // SPI mode
-  constexpr uint8_t FRAM_SPI_MODE = SPI_MODE0;
+//argument and bounds checking
+bool check_range(uint32_t addr, size_t len) {
+  if (len == 0) return true; //no-op is allowed
+  if (addr >= FRAM_TOTAL_BYTES) return false;
+  if (addr + (uint32_t)len > FRAM_TOTAL_BYTES) return false;
+}
 
-// From FRAM Datasheet Opcodes (page 5)
-constexpr uint8_t FRAM_CMD_WREN  = 0x06;
-constexpr uint8_t FRAM_CMD_WRITE = 0x02;
-constexpr uint8_t FRAM_CMD_READ  = 0x03;
-
-
-
-// initialize the FRAM driver 
-void fram_driver(void){
-    // initialize the SPI 
+//initialize FRAM interface; init SPI bus and config CS pin idle-high
+void fram_init(){
+    //initialize the SPI 
     spi_init();
-
-    // set the CS pin for FRAM --> A0 or D14 from config.h
-    spi_config_cs(FRAM_CS);
+    //confgiure FRAM CS pin as output, idle high (active-low)
+    spi_config_cs(Pins::FRAM_CS);
 }
 
-
-
-// write teh data from MCU -> FRAM
-void fram_write(uint32_t addr, const uint8_t *data, size_t length){
-
-  // now that spi is ready with chip select as well get the transmission ready for delivery
-  spi_begin(FRAM_CS, FRAM_SPI_MODE);
-
-
-// send Write enable opcode
-  spi_txrx(FRAM_CMD_WREN);
-  spi_end(FRAM_CS);
-
-
-// Begin actual write transaction
-  spi_begin(FRAM_CS, FRAM_SPI_MODE);
-
-// Send WRITE command opcode to tell FRAM we're writing data
-  spi_txrx(FRAM_CMD_WRITE);
-
-
-// Send 24-bit address (MSB first)
-  spi_txrx((addr >> 16) & 0xFF);  // Address bits 23-16
-  spi_txrx((addr >> 8) & 0xFF);   // Address bits 15-8
-  spi_txrx(addr & 0xFF);          // Address bits 7-0
-
-
-// Send the actual data bytes from MCU RAM
-  spi_transfer(data, NULL, length);
-
-
- // End SPI transaction, releasing CS pin high
-  spi_end(FRAM_CS);
-
+//read a byte from the status register
+uint8_t fram_read_status() {
+  spi_begin(Pins::FRAM_CS, 0);
+  spi_txrx(CMD_RDSR);
+  uint8_t status = spi_txrx(0xFF); //clock out one status byte
+  spi_end(Pins::FRAM_CS);
+  return status;
 }
 
+//guard from writing
+void fram_write_disable() {
+  spi_begin(Pins::FRAM_CS, 0);
+  spi_txrx(CMD_WRDI);
+  spi_end(Pins::FRAM_CS);
+}
 
+//write 'len' bytes starting at 'addr' from 'src'
+//returns false if out-of-range or invalid args.
+bool fram_write(uint32_t addr, const uint8_t *src, size_t len) {
+  //validate pointers and bounds
+  if (!src && len != 0) return false;
+  if (!check_range(addr, len)) return false;
 
+  if (len == 0) return true; //no-op write is valid
 
+  //enable writing
+  spi_begin(Pins::FRAM_CS, 0);
+  spi_txrx(CMD_WREN);
+  spi_end(Pins::FRAM_CS);
+  
+  spi_begin(Pins::FRAM_CS, 0);
+  spi_txrx(CMD_WRITE); //send WRITE command
 
-// reading first from external device to put in FRAM
-void fram_read(uint32_t addr, uint8_t *data, size_t length){
+  //send 24-bit address (MSB first)
+  spi_txrx((uint8_t)((addr >> 16) & 0xFF)); // Address bits 23-16
+  spi_txrx((uint8_t)((addr >> 8) & 0xFF)); // Address bits 15-8
+  spi_txrx((uint8_t)(addr & 0xFF)); // Address bits 7-0
 
-// Begin SPI transaction
-  spi_begin(FRAM_CS, FRAM_SPI_MODE);
+  //write 'len' bytes, transmit src bytes, ignore received bytes
+  spi_transfer(src, NULL, len);
 
-// Send READ command opcode to tell FRAM we're reading data
-  spi_txrx(FRAM_CMD_READ);
+  spi_end(Pins::FRAM_CS);
+  fram_write_disable(); //guard to disable write after operation
+  return true
+}
 
+//read 'len' bytes starting at 'addr' into 'dst'
+//returns false if out-of-range or invalid args
+bool fram_read(uint32_t addr, uint8_t *dst, size_t len) {
+  //validate pointers and bounds
+  if (!dst && len != 0) return false;
+  if (!check_range(addr, len)) return false;
 
-// Send 24-bit address (MSB first)
-  spi_txrx((addr >> 16) & 0xFF);  // Address bits 23-16
-  spi_txrx((addr >> 8) & 0xFF);   // Address bits 15-8
-  spi_txrx(addr & 0xFF);          // Address bits 7-0 
+  if (len == 0) return true; //no-op read is valid
 
+  spi_begin(Pins::FRAM_CS, 0);
+  spi_txrx(CMD_READ); //send READ command to tell FRAM we're reading data
 
-// Read data bytes from FRAM into buffer
-  spi_transfer(NULL, data, length);
+  //send 24-bit address (MSB first)
+  spi_txrx((uint8_t)((addr >> 16) & 0xFF)); // Address bits 23-16
+  spi_txrx((uint8_t)((addr >> 8) & 0xFF)); // Address bits 15-8
+  spi_txrx((uint8_t)(addr & 0xFF)); // Address bits 7-0 
 
-  // End SPI transaction
-  spi_end(FRAM_CS);
+  //read 'len' bytes, send dummy data, store in dst
+  spi_transfer(NULL, dst, len);
+
+  spi_end(Pins::FRAM_CS);
+  return true;
 }

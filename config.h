@@ -70,9 +70,6 @@ namespace Pyro {
 }
 
 namespace Logging {
-  //total amount of bytes in FRAM
-  constexpr uint32_t FRAM_TOTAL_BYTES = 262144UL;
-
   //reserve small header region for metadata
   constexpr uint16_t HEADER_BYTES = 256;
 
