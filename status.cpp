@@ -76,21 +76,27 @@ void status_init() {
   phase_on = false;
 }
 
-//call when triple-tap is detected.
+//call when triple-tap is detected
 //shows the battery state for a fixed window, then turns LEDs off again unless a persistent override is active
 void status_showBatteryDisplay(BatteryDisplay state, uint32_t now_ms) {
-  batt_state = state; //store what we want to show
-
   //start/extend the user display window
   window_active = true;
   window_end_ms = now_ms + 5000; //5s
 
-  reset_phase(now_ms); //reset timing so blink patterns start cleanly
+  //only reset blink timing if the requested display state actually changes
+  if (state != batt_state) {
+    batt_state = state; //store what we want to show
+    reset_phase(now_ms); //reset timing so blink patterns start cleanly
+  }
 }
 
 //set/clear persistent override
-//if set to NONE, module falls back to either user window (if active) or OFF.
+//if set to NONE, module falls back to either user window (if active) or OFF
 void status_setOverride(PersistentStatus status, uint32_t now_ms) {
+  //if override isn't changing, do nothing
+  if (status == persistent_status) {
+    return;
+  }
   persistent_status = status; //update override
   reset_phase(now_ms); //reset phase so new pattern starts cleanly
 }

@@ -20,7 +20,7 @@ enum class PersistentStatus : uint8_t {
 
 void status_init();
 void status_showBatteryDisplay(BatteryDisplay state, uint32_t now_ms);
-void status_setOverride(PersistentStatus status);
+void status_setOverride(PersistentStatus status, uint32_t now_ms);
 void status_tick(uint32_t now_ms);
 
 #endif
