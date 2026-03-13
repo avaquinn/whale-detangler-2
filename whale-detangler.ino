@@ -26,6 +26,18 @@ static int16_t prev_x = 0;
 static int16_t prev_y = 0;
 static int16_t prev_z = 0;
 
+static void init_safe_outputs() {
+  // Force potentially hazardous controls to known-safe LOW on boot.
+  pinMode(Pins::PYRO_CHG, OUTPUT);
+  digitalWrite(Pins::PYRO_CHG, LOW);
+  pinMode(Pins::PYRO_FIRE, OUTPUT);
+  digitalWrite(Pins::PYRO_FIRE, LOW);
+
+  // Keep analog front-end path disabled until a module explicitly enables it.
+  pinMode(Pins::PFET_EN, OUTPUT);
+  digitalWrite(Pins::PFET_EN, LOW);
+}
+
 static const char* state_name(DemoState s) {
   switch (s) {
     case DemoState::NORMAL: return "NORMAL";
@@ -77,6 +89,7 @@ void setup() {
   delay(200);
 #endif
 
+  init_safe_outputs();
   status_init();
   spi_init();
 

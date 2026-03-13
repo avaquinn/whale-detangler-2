@@ -97,6 +97,10 @@ static bool verify_ids() {
 
 //initialize SPI and configure ADXL registers to start measuring
 bool adxl_init() {
+  //interrupt inputs
+  pinMode(Pins::ACCEL_INT1, INPUT);
+  pinMode(Pins::ACCEL_INT2, INPUT);
+
   spi_config_cs(Pins::ACCEL_CS); //configure CS pin
 
   //soft reset for a clean known state
