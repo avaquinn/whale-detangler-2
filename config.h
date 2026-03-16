@@ -85,10 +85,10 @@ namespace DeviceInfo {
   constexpr uint8_t BOARD_SERIAL_MAX_LEN = 16; //plenty for "YY.MM.1000X" + null terminator
 
   //compile-time placeholder, set this during programming and write it to FRAM header
-  constexpr char BOARD_SERIAL_DEFAULT[] = "UNSET";
+  constexpr char BOARD_SERIAL_DEFAULT[] = "UNSET"; //TODO: set during programming
   
   //firmware version
-  constexpr char FW_VERSION_STR[] = "0.1.0";
+  constexpr char FW_VERSION_STR[] = "0.1.0"; //TODO: set during programming
 }
 
 namespace Detector {

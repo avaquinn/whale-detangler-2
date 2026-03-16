@@ -24,14 +24,13 @@ bool check_range(uint32_t addr, size_t len) {
   if (len == 0) return true; //no-op is allowed
   if (addr >= FRAM_TOTAL_BYTES) return false;
   if (addr + (uint32_t)len > FRAM_TOTAL_BYTES) return false;
+  return true;
 }
 
 //initialize FRAM interface; init SPI bus and config CS pin idle-high
 void fram_init(){
     //keep FRAM CS pulled high before we switch it to output mode
     pinMode(Pins::FRAM_CS, INPUT_PULLUP);
-    //initialize the SPI 
-    spi_init();
     //confgiure FRAM CS pin as output, idle high (active-low)
     spi_config_cs(Pins::FRAM_CS);
 }
