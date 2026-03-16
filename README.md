@@ -5,5 +5,5 @@
 Run from the project root:
 
 ```bash
-python3 realtime_3d_plot.py --port /dev/XXXXX --baud 115200
+python3 realtime_3d_plot.py --port /dev/cu.usbserial-XXXXX --baud 115200
 ```

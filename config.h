@@ -112,12 +112,4 @@ namespace CycleCfg { //placeholders until we decide pressure units (raw ADC vs c
   constexpr uint16_t END_HOLD_MS = 5000;
 }
 
-// namespace ProfileCfg { //profile capture during DROP and RETRIEVAL:
-//   // - We’ll log a summary always.
-//   // - Optionally log this many raw samples around the event (kept small for FRAM).
-//   constexpr uint16_t RAW_PROFILE_HZ = 50;        // matches charge-window sample rate
-//   constexpr uint16_t DROP_RAW_SAMPLES = 200;     // 4 seconds @ 50 Hz
-//   constexpr uint16_t RETR_RAW_SAMPLES = 200;     // 4 seconds @ 50 Hz
-// }
-
 #endif
