@@ -5,7 +5,6 @@
   - Reads the ADXL363 auxiliary ADC channel used to digitize the pressure/strain signal path
 */
 #include <Arduino.h>
-#include "types.h"
 #include "ADXL.h"
 #include "SPI.h"
 
@@ -24,6 +23,12 @@ static constexpr uint8_t REG_XDATA_L = 0x0E;
 
 //AUX ADC registers
 static constexpr uint8_t REG_ADC_DATA_L = 0x16;
+static constexpr uint8_t REG_THRESH_ACT_L = 0x20;
+static constexpr uint8_t REG_THRESH_ACT_H = 0x21;
+static constexpr uint8_t REG_TIME_ACT = 0x22;
+static constexpr uint8_t REG_ACT_INACT_CTL = 0x27;
+static constexpr uint8_t REG_INTMAP1 = 0x2A;
+static constexpr uint8_t REG_INTMAP2 = 0x2B;
 static constexpr uint8_t REG_SOFT_RESET = 0x1F; //write 0x52 to reset the ADXL
 static constexpr uint8_t REG_FILTER_CTL = 0x2C;
 static constexpr uint8_t REG_POWER_CTL = 0x2D;
@@ -37,6 +42,12 @@ static constexpr uint8_t EXPECTED_DEVID = 0xF3;
 static constexpr uint8_t POWER_CTL_MEASURE = (1 << 1); //enables measurement mode
 static constexpr uint8_t POWER_CTL_ADC_EN  = (1 << 7); //enables AUX ADC conversions TODO
 
+//ACT_INACT_CTL bits
+static constexpr uint8_t ACT_INACT_CTL_ACT_EN = (1 << 0);
+
+//INTMAP bits (ADXL activity/inactivity interrupt map)
+static constexpr uint8_t INTMAP_ACT = (1 << 4);
+
 //bits for measurement mode; ±2g: 0, ±4g: 1, ±8g: 2
 //TODO: check if max of peaks to determine if we can decrease for better resolution
 static constexpr uint8_t RANGE = 0b10; //±8g
@@ -44,6 +55,11 @@ static constexpr uint8_t RANGE = 0b10; //±8g
 //output data rate; 12.5 Hz: 000, 25 Hz: 001, 50 Hz: 010, 100 Hz: 011, 200 Hz: 100, 400 Hz: 101...111
 //TODO: more Hz = more power draw, if missing peaks or there are sharper shocks, bump to higher
 static constexpr uint8_t ODR = 0b011; //100 Hz
+
+//Activity detect placeholders for interrupt bring-up.
+//These should be tuned on real motion data.
+static constexpr uint16_t ACTIVITY_THRESHOLD = 140;
+static constexpr uint8_t ACTIVITY_TIME = 8;
 
 //helpers
 //read a byte from reg to out
@@ -122,6 +138,16 @@ bool adxl_init() {
   power |= POWER_CTL_ADC_EN;
   power |= POWER_CTL_MEASURE;
   reg_write_byte(REG_POWER_CTL, power);
+
+  //configure activity interrupt generation:
+  //INT1 -> motion detection path
+  //INT2 -> second activity pulse path (used by firmware triple-tap counter)
+  reg_write_byte(REG_THRESH_ACT_L, (uint8_t)(ACTIVITY_THRESHOLD & 0xFF));
+  reg_write_byte(REG_THRESH_ACT_H, (uint8_t)((ACTIVITY_THRESHOLD >> 8) & 0x07));
+  reg_write_byte(REG_TIME_ACT, ACTIVITY_TIME);
+  reg_write_byte(REG_ACT_INACT_CTL, ACT_INACT_CTL_ACT_EN);
+  reg_write_byte(REG_INTMAP1, INTMAP_ACT);
+  reg_write_byte(REG_INTMAP2, INTMAP_ACT);
 
   return true;
 }

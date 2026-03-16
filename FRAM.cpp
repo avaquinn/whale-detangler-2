@@ -15,12 +15,11 @@ static constexpr uint32_t FRAM_TOTAL_BYTES = 262144UL;
 static constexpr uint8_t CMD_WREN = 0x06; //write enable
 static constexpr uint8_t CMD_WRDI = 0x04; //write disable
 static constexpr uint8_t CMD_RDSR = 0x05; //read status register
-static constexpr uint8_t CMD_WRSR = 0x01; //write status register
 static constexpr uint8_t CMD_WRITE = 0x02; //write memory
 static constexpr uint8_t CMD_READ = 0x03; //read memory
 
 //argument and bounds checking
-bool check_range(uint32_t addr, size_t len) {
+static bool check_range(uint32_t addr, size_t len) {
   if (len == 0) return true; //no-op is allowed
   if (addr >= FRAM_TOTAL_BYTES) return false;
   if (addr + (uint32_t)len > FRAM_TOTAL_BYTES) return false;

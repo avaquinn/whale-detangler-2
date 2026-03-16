@@ -131,7 +131,12 @@ bool battery_init() {
 
   //configure alerts
   battery_setSocLowThresholdPercent(SOC_LOW_THRESH_PERCENT);
-  battery_enableSocChangeAlert(false);
+  //enable all supported alert classes for bring-up:
+  // - SOC low threshold (ATHD)
+  // - SOC delta (ALSC, 1% change)
+  // - voltage high/low (VALRT max/min)
+  // - voltage reset (EnVR)
+  battery_enableSocChangeAlert(true);
   battery_setVoltageAlertThresholdsMv(VALRT_MIN_MV, VALRT_MAX_MV);
   battery_setVresetThresholdMv(VRESET_MV);
   battery_enableVresetAlert(true);
