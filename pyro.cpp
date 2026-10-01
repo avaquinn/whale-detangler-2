@@ -1,66 +1,52 @@
 /*
   Pyrotechnic interface control
   - Controls PYRO_CHG and PYRO_FIRE outputs
-  - Provides controlled charge and fire commands with bounded pulse timing
+  - Enforces minimum charge time, a one-shot fire latch, and a bounded fire pulse
+  - The latch is restored from FRAM at boot so a brownout/reset after firing cannot re-arm the unit
+  - With BENCH_NO_PYRO the outputs are never driven high, but all bookkeeping still runs
 */
-#include <Arduino.h>
 #include "pyro.h"
 #include "config.h"
-
-// Keep fire pulse short and bounded.
-// Hardware-side line cutter circuitry may further shape pulse behavior.
-static constexpr uint16_t FIRE_PULSE_MS = 10;
 
 static bool g_charging = false;
 static bool g_fired = false;
 static uint32_t g_charge_start_ms = 0;
-static uint32_t g_last_fire_ms = 0;
-static bool g_has_fire_time = false;
 
-static inline void set_charge(bool en) {
-  digitalWrite(Pins::PYRO_CHG, en ? HIGH : LOW);
+static inline void drive(uint8_t pin, bool en) {
+#if BENCH_NO_PYRO
+  (void)en;
+  digitalWrite(pin, LOW);
+#else
+  digitalWrite(pin, en ? HIGH : LOW);
+#endif
 }
 
-static inline void set_fire(bool en) {
-  digitalWrite(Pins::PYRO_FIRE, en ? HIGH : LOW);
-}
-
-void pyro_init() {
+void pyro_init(bool already_fired) {
+  digitalWrite(Pins::PYRO_CHG, LOW);
   pinMode(Pins::PYRO_CHG, OUTPUT);
+  digitalWrite(Pins::PYRO_FIRE, LOW);
   pinMode(Pins::PYRO_FIRE, OUTPUT);
 
-  // Default to safe/idle outputs.
-  set_charge(false);
-  set_fire(false);
-
   g_charging = false;
-  g_fired = false;
+  g_fired = already_fired;
   g_charge_start_ms = 0;
-  g_last_fire_ms = 0;
-  g_has_fire_time = false;
 }
 
 bool pyro_startCharge(uint32_t now_ms) {
   if (g_fired) {
     return false;
   }
-
-  // Guard against accidental rapid repeat attempts.
-  if (g_has_fire_time && (uint32_t)(now_ms - g_last_fire_ms) < Pyro::MIN_REFIRE_LOCKOUT_MS) {
-    return false;
-  }
-
   if (!g_charging) {
     g_charging = true;
     g_charge_start_ms = now_ms;
-    set_charge(true);
+    drive(Pins::PYRO_CHG, true);
   }
   return true;
 }
 
 void pyro_stopCharge() {
   g_charging = false;
-  set_charge(false);
+  drive(Pins::PYRO_CHG, false);
 }
 
 bool pyro_isCharging() {
@@ -68,41 +54,26 @@ bool pyro_isCharging() {
 }
 
 bool pyro_isReadyToFire(uint32_t now_ms) {
-  if (!g_charging || g_fired) {
-    return false;
-  }
-  return (uint32_t)(now_ms - g_charge_start_ms) >= Pyro::MIN_CHARGE_MS;
+  return g_charging && !g_fired && (uint32_t)(now_ms - g_charge_start_ms) >= Pyro::MIN_CHARGE_MS;
 }
 
 bool pyro_chargeTimedOut(uint32_t now_ms) {
-  if (!g_charging) {
-    return false;
-  }
-  return (uint32_t)(now_ms - g_charge_start_ms) >= Pyro::MAX_CHARGE_MS;
+  return g_charging && (uint32_t)(now_ms - g_charge_start_ms) >= Pyro::MAX_CHARGE_MS;
 }
 
 bool pyro_fire(uint32_t now_ms) {
-  if (g_fired) {
-    return false;
-  }
-  if (g_has_fire_time && (uint32_t)(now_ms - g_last_fire_ms) < Pyro::MIN_REFIRE_LOCKOUT_MS) {
-    return false;
-  }
   if (!pyro_isReadyToFire(now_ms)) {
     return false;
   }
 
-  // Stop charge before command to avoid undefined overlap states.
+  //stop charging before the fire command so both switches are never on together
   pyro_stopCharge();
 
-  // One bounded fire pulse.
-  set_fire(true);
-  delay(FIRE_PULSE_MS);
-  set_fire(false);
+  drive(Pins::PYRO_FIRE, true);
+  delay(Pyro::FIRE_PULSE_MS);
+  drive(Pins::PYRO_FIRE, false);
 
-  g_fired = true;          // One-shot latch for single-use cutter workflow.
-  g_last_fire_ms = now_ms; // Keep lockout bookkeeping coherent.
-  g_has_fire_time = true;
+  g_fired = true; //one-shot latch; the caller persists it to FRAM
   return true;
 }
 

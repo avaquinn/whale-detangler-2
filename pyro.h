@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-void pyro_init();
+void pyro_init(bool already_fired); //already_fired comes from the FRAM latch
 bool pyro_startCharge(uint32_t now_ms);
 void pyro_stopCharge();
 bool pyro_isCharging();
