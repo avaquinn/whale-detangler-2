@@ -81,7 +81,7 @@ void status_init() {
 void status_showBatteryDisplay(BatteryDisplay state, uint32_t now_ms) {
   //start/extend the user display window
   window_active = true;
-  window_end_ms = now_ms + 5000; //5s
+  window_end_ms = now_ms + Ui::BATTERY_DISPLAY_MS;
 
   //only reset blink timing if the requested display state actually changes
   if (state != batt_state) {

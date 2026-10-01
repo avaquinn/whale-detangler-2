@@ -1,160 +1,322 @@
 /*
-  Whale/entanglement detection logic
-  - Consumes SensorSnapshot data (and short history/features) to classify behavior
-  - Outputs a Decision/Action (e.g., NO_ACTION, START_CHARGE, ABORT_CHARGE, FIRE_CUT) plus reason codes
+  Entanglement detection (anomalous pot motion)
+  - A normal pot has a predictable profile: fast descent, long static soak (small tide/swell ripple),
+    then a fast, monotonic haul to the surface. An entangled whale drags the gear in ways that break
+    that profile. The detector tracks the phase and flags departures from it:
+      crush depth (deeper than any legal set), soak excursion (left the resting depth without a clean
+      haul), reversal (wrong direction during descent/ascent), towed (sustained motion without upward
+      travel), ghost-gear timer (optional)
+  - Depth is decimated to 1 Hz and smoothed over Detector::SMOOTH_S seconds so surface-wave pressure
+    (5-20 s periods) is not mistaken for vertical motion; rate-based checks wait for a full window
+  - Anomalies are STATES, not one-shot events, so the two-stage charge -> confirm logic works:
+      stage 1: anomaly for PRECHARGE_CONFIRM_COUNT samples (and deep enough) -> START_CHARGE
+      stage 2: ABORT after ABORT_CONFIRM_COUNT normal samples; FIRE only if the anomaly is still
+               present FIRE_CONFIRM_MS after charging started and the pot is deeper than MIN_FIRE_DEPTH
+  - Samples without a valid calibrated depth are never used as evidence
 */
-#include <Arduino.h>
-#include <stdlib.h>
 #include "detector.h"
-#include "config.h"
+#include "ADXL.h"
 
-// Placeholder tuning values for early bring-up.
-// These can be replaced with calibrated pressure/depth and accel heuristics later.
-static constexpr uint16_t PRESSURE_DELTA_TRIGGER = 24;
-static constexpr uint16_t PRESSURE_DELTA_CLEAR = 8;
-static constexpr uint16_t ACCEL_JERK_TRIGGER = 300;
-static constexpr uint16_t ACCEL_JERK_CLEAR = 120;
+static constexpr uint8_t HIST_LEN = Detector::SMOOTH_S + Detector::RATE_LAG_S;
+static constexpr uint16_t HIST_STEP_MS = 1000;
+static constexpr uint8_t SHORT_MEAN_S = 4; //for surface/disarm decisions
 
-// Previous-sample storage for delta-based features.
-static bool g_have_prev = false;
-static SensorSnapshot g_prev = {};
+//1 Hz depth history (ring, newest at g_head)
+static int16_t g_hist[HIST_LEN];
+static uint8_t g_count = 0;
+static uint8_t g_head = 0;
+static uint32_t g_next_push_ms = 0;
 
-// Streak counters implement basic debounce/confirmation.
-// - anomaly streak: avoid starting charge from a one-sample spike.
-// - calm streak: avoid aborting charge from a one-sample calm blip.
+static DeployPhase g_phase = DeployPhase::SURFACE;
+static uint32_t g_phase_start_ms = 0;
+static uint32_t g_deploy_start_ms = 0;
+
+static bool g_rate_valid = false;
+static int16_t g_rate_cm_s = 0; //positive = getting deeper
+static int16_t g_smooth_cm = 0;
+
+static bool g_still = false;
+static uint32_t g_still_since_ms = 0;
+static int16_t g_soak_baseline_cm = 0;
+
+static uint32_t g_motion_ms = 0; //accumulated motion without upward travel
+static uint32_t g_last_motion_ms = 0;
+static uint32_t g_last_eval_ms = 0;
+
 static uint8_t g_anomaly_streak = 0;
 static uint8_t g_calm_streak = 0;
-
-// Charge-window tracking is local to the detector so timeout checks
-// stay consistent even if caller loop timing jitters.
 static bool g_charge_window_seen = false;
 static uint32_t g_charge_window_start_ms = 0;
 
-// Unsigned absolute difference helper for pressure deltas.
-static inline uint16_t abs_u16_diff_u16(uint16_t a, uint16_t b) {
-  return (a > b) ? (a - b) : (b - a);
+static void hist_reset() {
+  g_count = 0;
+  g_head = 0;
+  g_rate_valid = false;
+  g_rate_cm_s = 0;
 }
 
-// "Jerk" proxy = per-axis sample-to-sample change summed across X/Y/Z.
-// This is intentionally simple for Phase A and can be replaced later
-// with richer motion features (RMS windows, directionality, DTW, etc.).
-static uint16_t accel_jerk(const SensorSnapshot &a, const SensorSnapshot &b) {
-  uint32_t dx = (uint32_t)abs((int32_t)a.ax - (int32_t)b.ax);
-  uint32_t dy = (uint32_t)abs((int32_t)a.ay - (int32_t)b.ay);
-  uint32_t dz = (uint32_t)abs((int32_t)a.az - (int32_t)b.az);
-  uint32_t jerk = dx + dy + dz;
-  if (jerk > 0xFFFFUL) jerk = 0xFFFFUL;
-  return (uint16_t)jerk;
+//push one point per second; after a gap, repeat the current depth so the ring stays time-aligned
+static void hist_update(uint32_t t_ms, int16_t depth_cm) {
+  if (g_count == 0) {
+    g_next_push_ms = t_ms;
+  }
+  uint8_t pushes = 0;
+  while ((int32_t)(t_ms - g_next_push_ms) >= 0 && pushes < HIST_LEN) {
+    g_head = (uint8_t)((g_head + 1) % HIST_LEN);
+    g_hist[g_head] = depth_cm;
+    if (g_count < HIST_LEN) g_count++;
+    g_next_push_ms += HIST_STEP_MS;
+    pushes++;
+  }
+  if (pushes == HIST_LEN) {
+    g_next_push_ms = t_ms + HIST_STEP_MS; //long gap: resynchronise
+  }
 }
 
-// Reset detector internal history/counters.
-void detector_init() {
-  // Clear all state so a new deployment/test starts from known conditions.
-  g_have_prev = false;
-  g_prev = {};
+//mean of 'n' points, the newest of which is 'skip' points before the newest entry
+static int16_t hist_mean(uint8_t n, uint8_t skip) {
+  int32_t sum = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t idx = (uint8_t)((g_head + HIST_LEN - ((skip + i) % HIST_LEN)) % HIST_LEN);
+    sum += g_hist[idx];
+  }
+  return (int16_t)(sum / n);
+}
+
+static void update_rate() {
+  if (g_count == 0) return;
+  uint8_t n = g_count < Detector::SMOOTH_S ? g_count : Detector::SMOOTH_S;
+  g_smooth_cm = hist_mean(n, 0);
+
+  g_rate_valid = (g_count >= HIST_LEN);
+  if (g_rate_valid) {
+    int16_t older = hist_mean(Detector::SMOOTH_S, Detector::RATE_LAG_S);
+    g_rate_cm_s = (int16_t)(((int32_t)g_smooth_cm - older) / Detector::RATE_LAG_S);
+  } else {
+    g_rate_cm_s = 0;
+  }
+}
+
+static void set_phase(DeployPhase p, uint32_t t_ms) {
+  g_phase = p;
+  g_phase_start_ms = t_ms;
+  g_still = false;
+}
+
+static void reset_confirmation() {
   g_anomaly_streak = 0;
   g_calm_streak = 0;
   g_charge_window_seen = false;
-  g_charge_window_start_ms = 0;
 }
 
-// Evaluate one snapshot and return the next requested action.
-//
-// `in_charge_window` tells the detector which phase the state machine is in:
-// - false: normal monitoring phase (detector may request START_CHARGE)
-// - true:  charging-confirmation phase (detector may ABORT_CHARGE or FIRE_CUT)
-//
-// This keeps detector logic phase-aware without depending on global state.
-DetectorOutput detector_evaluate(const SensorSnapshot &snap, bool in_charge_window) {
-  // Default return is explicitly NO_ACTION.
-  // Branches below overwrite this when detector has a decision.
-  DetectorOutput out = {DetectorAction::NO_ACTION, REASON_NONE};
+static void start_soak(uint32_t t_ms) {
+  set_phase(DeployPhase::SOAK, t_ms);
+  g_soak_baseline_cm = g_smooth_cm;
+}
 
-  // Need at least one prior sample to compute pressure delta and jerk.
-  if (!g_have_prev) {
-    g_prev = snap;
-    g_have_prev = true;
+void detector_init() {
+  hist_reset();
+  set_phase(DeployPhase::SURFACE, 0);
+  g_deploy_start_ms = 0;
+  g_smooth_cm = 0;
+  g_soak_baseline_cm = 0;
+  g_motion_ms = 0;
+  g_last_motion_ms = 0;
+  g_last_eval_ms = 0;
+  reset_confirmation();
+}
+
+DeployPhase detector_phase() {
+  return g_phase;
+}
+
+int16_t detector_rate_cm_s() {
+  return g_rate_cm_s;
+}
+
+//phase transitions for a normal cycle
+static void update_phase(uint32_t t, int16_t depth) {
+  if (g_phase == DeployPhase::SURFACE) {
+    if (depth >= Depth::ARM_DEPTH_CM) { //arm on the raw reading: descents are fast
+      set_phase(DeployPhase::DESCENT, t);
+      g_deploy_start_ms = t;
+      g_motion_ms = 0;
+      reset_confirmation();
+    }
+    return;
+  }
+
+  //disarm on a short mean so a wave trough near the arm depth does not toggle the state
+  if (g_count >= SHORT_MEAN_S && hist_mean(SHORT_MEAN_S, 0) < Depth::ARM_DEPTH_CM - Depth::ARM_HYST_CM) {
+    set_phase(DeployPhase::SURFACE, t);
+    hist_reset();
+    reset_confirmation();
+    return;
+  }
+
+  const int16_t rate = g_rate_cm_s;
+  const bool still_now = g_rate_valid && rate <= Detector::STILL_RATE_CM_S && rate >= -Detector::STILL_RATE_CM_S;
+  if (still_now && !g_still) g_still_since_ms = t;
+  g_still = still_now;
+  const uint32_t still_ms = g_still ? (uint32_t)(t - g_still_since_ms) : 0;
+
+  switch (g_phase) {
+    case DeployPhase::DESCENT:
+      if (still_ms >= Detector::SOAK_SETTLE_MS || (uint32_t)(t - g_phase_start_ms) >= Detector::MAX_DESCENT_MS) {
+        start_soak(t);
+      }
+      break;
+
+    case DeployPhase::SOAK:
+      if (g_rate_valid && rate <= -Detector::HAUL_RATE_CM_S) {
+        set_phase(DeployPhase::ASCENT, t);
+      } else if (g_still) {
+        //follow the tide slowly while still; frozen during motion so an excursion is not absorbed
+        g_soak_baseline_cm += (int16_t)((g_smooth_cm - g_soak_baseline_cm) / 16);
+      }
+      break;
+
+    case DeployPhase::ASCENT:
+      //hauler paused, or the pot settled back down: resting again at a new depth
+      if (still_ms >= Detector::SOAK_SETTLE_MS) {
+        start_soak(t);
+      }
+      break;
+
+    case DeployPhase::SURFACE:
+      break;
+  }
+}
+
+//accumulate motion time while the pot is not being hauled up
+static void update_motion(const SensorSnapshot &snap, uint32_t dt) {
+  const bool rising = g_rate_valid && g_rate_cm_s <= -Detector::HAUL_RATE_CM_S;
+  if (!(snap.flags & SNAP_VALID_ACCEL) || g_phase == DeployPhase::DESCENT || rising) {
+    return;
+  }
+  if (adxl_dynamic_mg(snap.ax, snap.ay, snap.az) >= Detector::MOTION_MG) {
+    g_motion_ms += dt;
+    g_last_motion_ms = snap.t_ms;
+  } else if ((uint32_t)(snap.t_ms - g_last_motion_ms) >= Detector::CALM_RESET_MS) {
+    g_motion_ms = 0;
+  }
+}
+
+//which abnormal conditions hold right now
+static uint16_t anomaly_reasons(uint32_t t) {
+  uint16_t r = REASON_NONE;
+  const int16_t rate = g_rate_cm_s;
+
+  if (g_smooth_cm >= Depth::CRUSH_DEPTH_CM) r |= REASON_CRUSH_DEPTH;
+
+  if (Detector::MAX_DEPLOY_HOURS > 0 &&
+      (uint32_t)(t - g_deploy_start_ms) >= (uint32_t)Detector::MAX_DEPLOY_HOURS * 3600000UL) {
+    r |= REASON_TIME_UNDERWATER;
+  }
+
+  if (g_motion_ms >= Detector::TOWED_MOTION_MS) r |= REASON_TOWED;
+
+  if (!g_rate_valid) return r;
+
+  switch (g_phase) {
+    case DeployPhase::DESCENT:
+      if (rate <= -Detector::REVERSAL_RATE_CM_S) r |= REASON_REVERSAL; //pulled up before reaching bottom
+      break;
+
+    case DeployPhase::SOAK: {
+      int16_t dev = g_smooth_cm - g_soak_baseline_cm;
+      if (dev < 0) dev = -dev;
+      if (dev >= Detector::SOAK_EXCURSION_CM) r |= REASON_SOAK_EXCURSION;
+      break;
+    }
+
+    case DeployPhase::ASCENT:
+      if (rate >= Detector::REVERSAL_RATE_CM_S) r |= REASON_REVERSAL; //dragged back down mid-haul
+      break;
+
+    case DeployPhase::SURFACE:
+      break;
+  }
+  return r;
+}
+
+DetectorOutput detector_evaluate(const SensorSnapshot &snap, bool in_charge_window) {
+  DetectorOutput out = {DetectorAction::NO_ACTION, REASON_NONE};
+  const uint32_t t = snap.t_ms;
+  const uint32_t dt = g_last_eval_ms ? (uint32_t)(t - g_last_eval_ms) : 0;
+  g_last_eval_ms = t;
+
+  //no calibrated depth: never count it as evidence; fail safe if charging
+  if (!(snap.flags & SNAP_VALID_DEPTH)) {
+    if (in_charge_window) {
+      out.action = DetectorAction::ABORT_CHARGE;
+      out.reasons = REASON_SENSOR_FAULT;
+      reset_confirmation();
+    } else {
+      g_anomaly_streak = 0;
+    }
     return out;
   }
 
-  // Feature extraction (placeholder):
-  // - pressure delta: change in raw pressure ADC since previous sample
-  // - jerk: change in accel since previous sample
-  uint16_t p_delta = abs_u16_diff_u16(snap.pressure_adc_raw, g_prev.pressure_adc_raw);
-  uint16_t jerk = accel_jerk(snap, g_prev);
+  const int16_t depth = snap.depth_cm;
+  if (g_phase != DeployPhase::SURFACE || depth >= Depth::ARM_DEPTH_CM) {
+    hist_update(t, depth);
+    update_rate();
+  }
+  update_phase(t, depth);
 
-  bool pressure_anomaly = p_delta >= PRESSURE_DELTA_TRIGGER;
-  bool accel_anomaly = jerk >= ACCEL_JERK_TRIGGER;
-  bool any_anomaly = pressure_anomaly || accel_anomaly;
-
-  if (in_charge_window) {
-    // Stage 2 (already charging):
-    // confirm either recovery (ABORT) or persistent anomaly (FIRE on timeout).
-    if (!g_charge_window_seen) {
-      g_charge_window_seen = true;
-      g_charge_window_start_ms = snap.t_ms;
-      g_calm_streak = 0;
-    }
-
-    // Any anomaly resets calm streak.
-    if (any_anomaly) {
-      g_calm_streak = 0;
-    } else {
-      // Clear thresholds are lower than trigger thresholds to add hysteresis
-      // and reduce rapid flip-flopping near boundaries.
-      bool pressure_clear = p_delta <= PRESSURE_DELTA_CLEAR;
-      bool accel_clear = jerk <= ACCEL_JERK_CLEAR;
-      if (pressure_clear && accel_clear) {
-        if (g_calm_streak < 255) g_calm_streak++;
-      } else {
-        g_calm_streak = 0;
-      }
-    }
-
-    // ABORT has priority if we have enough calm confirmation.
-    if (g_calm_streak >= Detector::ABORT_CONFIRM_COUNT) {
+  if (g_phase == DeployPhase::SURFACE) {
+    if (in_charge_window) {
       out.action = DetectorAction::ABORT_CHARGE;
-      out.reasons = REASON_NONE;
-      g_charge_window_seen = false;
-      g_anomaly_streak = 0;
-    // If we never recovered inside charge window, request FIRE.
-    } else if ((uint32_t)(snap.t_ms - g_charge_window_start_ms) >= Detector::CHARGE_CONFIRM_TIMEOUT_MS) {
-      out.action = DetectorAction::FIRE_CUT;
-      out.reasons = REASON_TIMEOUT;
-      if (pressure_anomaly) out.reasons |= REASON_DEPTH_ANOMALY;
-      if (accel_anomaly) out.reasons |= REASON_ACCEL_ANOMALY;
-      g_charge_window_seen = false;
-      g_anomaly_streak = 0;
-    } else {
-      // Continue charging while collecting more evidence.
-      out.action = DetectorAction::KEEP_CHARGING;
-      out.reasons = REASON_NONE;
-      if (pressure_anomaly) out.reasons |= REASON_DEPTH_ANOMALY;
-      if (accel_anomaly) out.reasons |= REASON_ACCEL_ANOMALY;
+      out.reasons = REASON_SHALLOW;
     }
-  } else {
-    // Stage 1 (monitoring):
-    // look for confirmed anomaly before asking pyro to charge.
-    g_charge_window_seen = false;
-    g_calm_streak = 0;
-
-    if (any_anomaly) {
-      if (g_anomaly_streak < 255) g_anomaly_streak++;
-    } else {
-      g_anomaly_streak = 0;
-    }
-
-    // Request charge only after consecutive anomaly confirmations.
-    if (g_anomaly_streak >= Detector::PRECHARGE_CONFIRM_COUNT) {
-      out.action = DetectorAction::START_CHARGE;
-      out.reasons = REASON_NONE;
-      if (pressure_anomaly) out.reasons |= REASON_DEPTH_ANOMALY;
-      if (accel_anomaly) out.reasons |= REASON_ACCEL_ANOMALY;
-      g_anomaly_streak = 0;
-    }
+    return out;
   }
 
-  // Advance history for next evaluate() call.
-  g_prev = snap;
+  update_motion(snap, dt);
+
+  const uint16_t reasons = anomaly_reasons(t);
+  const bool anomaly = reasons != REASON_NONE;
+  const bool deep_enough = depth >= Depth::MIN_FIRE_DEPTH_CM;
+
+  if (!in_charge_window) {
+    //stage 1: confirm the anomaly before asking pyro to charge
+    g_charge_window_seen = false;
+    g_calm_streak = 0;
+    g_anomaly_streak = anomaly ? (uint8_t)min(g_anomaly_streak + 1, 255) : 0;
+
+    if (g_anomaly_streak >= Detector::PRECHARGE_CONFIRM_COUNT && deep_enough) {
+      out.action = DetectorAction::START_CHARGE;
+      out.reasons = reasons;
+      g_anomaly_streak = 0;
+    }
+    return out;
+  }
+
+  //stage 2: charging; confirm or abort
+  if (!g_charge_window_seen) {
+    g_charge_window_seen = true;
+    g_charge_window_start_ms = t;
+    g_calm_streak = 0;
+  }
+  g_calm_streak = anomaly ? 0 : (uint8_t)min(g_calm_streak + 1, 255);
+
+  if (g_calm_streak >= Detector::ABORT_CONFIRM_COUNT) {
+    out.action = DetectorAction::ABORT_CHARGE;
+    reset_confirmation();
+  } else if ((uint32_t)(t - g_charge_window_start_ms) >= Detector::FIRE_CONFIRM_MS) {
+    if (anomaly && deep_enough) {
+      out.action = DetectorAction::FIRE_CUT;
+      out.reasons = reasons;
+    } else {
+      //never fire on missing evidence: the anomaly faded or the pot is too shallow
+      out.action = DetectorAction::ABORT_CHARGE;
+      out.reasons = deep_enough ? reasons : (uint16_t)(reasons | REASON_SHALLOW);
+    }
+    reset_confirmation();
+  } else {
+    out.action = DetectorAction::KEEP_CHARGING;
+    out.reasons = reasons;
+  }
   return out;
 }

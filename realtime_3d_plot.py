@@ -3,12 +3,13 @@
 Realtime 3D ADXL visualizer for whale-detangler alpha demo.
 
 Reads serial lines in format:
-  PLOT,<t_ms>,<x>,<y>,<z>,<state_code>,<erratic_flag>
+  PLOT,<t_ms>,<x>,<y>,<z>,<state_code>,<activity_flag>
 
-State codes:
-  0 = NORMAL (green)
-  1 = ANOMALY_CHARGING (yellow)
-  2 = FIRED (red)
+State codes are the firmware's DeviceState (types.h):
+  0 = BOOT, 1 = SAFE_IDLE, 2 = MONITORING (green)
+  3 = CHARGING (yellow)
+  4 = FIRED (red)
+  5 = FAULT (magenta)
 """
 
 import argparse
@@ -35,12 +36,19 @@ def pick_default_port():
     return ports[0].device
 
 
+STATE_CHARGING = 3
+STATE_FIRED = 4
+STATE_FAULT = 5
+
+
 def state_color(state_code):
-    if state_code == 2:  # FIRED
+    if state_code == STATE_FIRED:
         return (1.0, 0.1, 0.1, 1.0)
-    if state_code == 1:  # ANOMALY_CHARGING
+    if state_code == STATE_CHARGING:
         return (1.0, 1.0, 0.1, 1.0)
-    return (0.1, 1.0, 0.1, 1.0)  # NORMAL
+    if state_code == STATE_FAULT:
+        return (1.0, 0.1, 1.0, 1.0)
+    return (0.1, 1.0, 0.1, 1.0)  # BOOT / SAFE_IDLE / MONITORING
 
 
 class Plot3D:
@@ -161,8 +169,8 @@ def main():
         sys.exit(1)
 
     print(f"Connected to {port} @ {args.baud}")
-    print("Expecting lines: PLOT,<t_ms>,<x>,<y>,<z>,<state_code>,<erratic_flag>")
-    print("State color: 0=green, 1=yellow, 2=red")
+    print("Expecting lines: PLOT,<t_ms>,<x>,<y>,<z>,<state_code>,<activity_flag>")
+    print("State color: monitoring=green, charging=yellow, fired=red, fault=magenta")
 
     plotter = Plot3D(ser=ser, trail_len=max(10, args.trail))
     sys.exit(plotter.app.exec())
