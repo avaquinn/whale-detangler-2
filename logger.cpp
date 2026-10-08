@@ -6,6 +6,9 @@
   - Sample ring: raw snapshots while underwater; overwrites the oldest samples, never the journal
   - Every record is framed with a marker, sequence number, boot count, and CRC-16, so a reader can
     resynchronise after a ring wraps and reject torn or stale records
+  - Standalone recording ("rec <hz> YES"): the journal and sample regions are joined into one
+    linear recording area that every record goes to, and that stops (never wraps) when full, so the
+    start of a test is never overwritten. The recording is then held until "rec clear YES".
 */
 #include <string.h>
 #include <util/crc16.h>
@@ -14,9 +17,10 @@
 #include "FRAM.h"
 
 static constexpr uint32_t LOG_MAGIC = 0x57444C32UL; //"WDL2"
-static constexpr uint8_t LAYOUT_VERSION = 2;
+static constexpr uint8_t LAYOUT_VERSION = 4; //3: SensorSnapshot gained motion_mg; 4: recording mode
 static constexpr uint8_t RECORD_MARKER = 0xA5;
-static constexpr uint8_t MAX_PAYLOAD = 48;
+static constexpr uint8_t MAX_PAYLOAD = 128;
+static_assert(sizeof(RecBlock) <= MAX_PAYLOAD, "recording block too large");
 
 struct __attribute__((packed)) LogHeader {
   uint32_t magic;
@@ -32,9 +36,19 @@ struct __attribute__((packed)) LogHeader {
   uint32_t cycle_count;
   char board_serial[DeviceInfo::BOARD_SERIAL_MAX_LEN];
   PressureCal cal;
+  uint8_t rec_mode; //RecMode
+  uint8_t rec_hz;
+  uint8_t rec_full;
+  uint32_t rec_next;
   uint16_t crc; //must stay last
 };
-static_assert(sizeof(LogHeader) <= Logging::HEADER_SLOT_BYTES, "header slot too small");
+static_assert(sizeof(LogHeader) <= Logging::HEADER_SLOT_BYTES - 2, "header slot too small");
+
+//two diagnostic bytes at the end of header slot A, outside the CRC: they change too often to rewrite
+//the header for, and must survive a reset
+static constexpr uint32_t CRUMB_ADDR = Logging::HEADER_SLOT_BYTES - 1; //ResetStage breadcrumb
+static constexpr uint32_t OPTIONS_ADDR = Logging::HEADER_SLOT_BYTES - 2; //bench options
+static constexpr uint8_t OPTION_BRIDGE_OFF = 0xB0; //any other value = bridge enabled (safe default)
 static_assert(2 * Logging::HEADER_SLOT_BYTES <= Logging::JOURNAL_START, "header overlaps journal");
 static_assert(Logging::SAMPLE_END <= FRAM_TOTAL_BYTES, "layout exceeds FRAM");
 
@@ -55,9 +69,11 @@ struct Region {
 };
 static const Region JOURNAL = {Logging::JOURNAL_START, Logging::JOURNAL_END, &LogHeader::journal_next, &LogHeader::journal_wrapped};
 static const Region SAMPLES = {Logging::SAMPLE_START, Logging::SAMPLE_END, &LogHeader::sample_next, &LogHeader::sample_wrapped};
+static const Region RECORDING = {Logging::JOURNAL_START, Logging::SAMPLE_END, &LogHeader::rec_next, nullptr}; //no wrap
 
 static LogHeader g_hdr;
 static bool g_ready = false;
+static uint8_t g_reset_stage = STAGE_NONE; //breadcrumb found at boot
 
 static uint16_t crc16(uint16_t crc, const uint8_t *p, size_t n) {
   while (n--) crc = _crc_xmodem_update(crc, *p++); //CRC-16/CCITT polynomial 0x1021
@@ -71,7 +87,9 @@ static uint16_t header_crc(const LogHeader &h) {
 static bool header_valid(const LogHeader &h) {
   return h.magic == LOG_MAGIC && h.layout == LAYOUT_VERSION && h.crc == header_crc(h) &&
          h.journal_next >= JOURNAL.start && h.journal_next <= JOURNAL.end &&
-         h.sample_next >= SAMPLES.start && h.sample_next <= SAMPLES.end;
+         h.sample_next >= SAMPLES.start && h.sample_next <= SAMPLES.end &&
+         h.rec_next >= RECORDING.start && h.rec_next <= RECORDING.end &&
+         h.rec_mode <= (uint8_t)RecMode::HOLDING;
 }
 
 //load the newest valid slot
@@ -97,8 +115,10 @@ static bool erase_regions() {
   g_hdr.sample_next = SAMPLES.start;
   g_hdr.journal_wrapped = 0;
   g_hdr.sample_wrapped = 0;
-  return fram_fill(JOURNAL.start, 0, JOURNAL.end - JOURNAL.start) &&
-         fram_fill(SAMPLES.start, 0, SAMPLES.end - SAMPLES.start);
+  g_hdr.rec_next = RECORDING.start;
+  g_hdr.rec_full = 0;
+  //journal and samples are contiguous, so this also clears the recording area
+  return fram_fill(JOURNAL.start, 0, SAMPLES.end - JOURNAL.start);
 }
 
 static bool format() {
@@ -109,8 +129,13 @@ static bool format() {
   return erase_regions() && header_store() && header_store(); //populate both slots
 }
 
-static bool append(const Region &rg, LogRecordType type, const void *payload, uint8_t len) {
+static bool append(const Region &requested, LogRecordType type, const void *payload, uint8_t len) {
   if (!g_ready || len > MAX_PAYLOAD) return false;
+
+  //recording mode: every record goes to the recording area; holding: logging paused, data kept
+  const RecMode mode = (RecMode)g_hdr.rec_mode;
+  if (mode == RecMode::HOLDING) return true;
+  const Region &rg = (mode == RecMode::RECORDING) ? RECORDING : requested;
 
   uint8_t buf[sizeof(FrameHeader) + MAX_PAYLOAD + 2];
   FrameHeader fh = {RECORD_MARKER, (uint8_t)type, len, g_hdr.boot_count, g_hdr.seq};
@@ -122,8 +147,13 @@ static bool append(const Region &rg, LogRecordType type, const void *payload, ui
 
   const uint8_t frame_len = (uint8_t)(len + FRAME_OVERHEAD);
   uint32_t addr = g_hdr.*rg.next;
-  if (addr + frame_len > rg.end) { //does not fit before the end: wrap to the start
-    addr = rg.start;
+  if (addr + frame_len > rg.end) {
+    if (!rg.wrapped) { //recording area is full: stop and keep everything recorded so far
+      g_hdr.rec_mode = (uint8_t)RecMode::HOLDING;
+      g_hdr.rec_full = 1;
+      return header_store();
+    }
+    addr = rg.start; //ring: wrap to the start, overwriting the oldest records
     g_hdr.*rg.wrapped = 1;
   }
   if (!fram_write(addr, buf, frame_len)) return false;
@@ -146,6 +176,13 @@ bool logger_init(uint8_t reset_cause) {
     return false;
   }
   g_ready = true;
+
+  //a breadcrumb left set means the previous boot was reset in the middle of that activity
+  uint8_t crumb = STAGE_NONE;
+  if (fram_read(CRUMB_ADDR, &crumb, 1) && crumb != STAGE_NONE && crumb <= STAGE_GAUGE) {
+    g_reset_stage = crumb;
+  }
+  logger_markStage(STAGE_NONE);
 
   BootRecord rec = {};
   rec.reset_cause = reset_cause;
@@ -203,7 +240,86 @@ bool logger_setSerial(const char *serial) {
 
 bool logger_erase() {
   if (!g_ready) return false;
+  g_hdr.rec_mode = (uint8_t)RecMode::OFF;
   return erase_regions() && header_store();
+}
+
+void logger_markStage(uint8_t stage) {
+  if (g_ready) (void)fram_write(CRUMB_ADDR, &stage, 1);
+}
+
+uint8_t logger_resetStage() {
+  return g_reset_stage;
+}
+
+bool logger_bridgeEnabled() {
+  uint8_t v = 0;
+  return !(g_ready && fram_read(OPTIONS_ADDR, &v, 1) && v == OPTION_BRIDGE_OFF);
+}
+
+bool logger_setBridgeEnabled(bool enabled) {
+  uint8_t v = enabled ? 0x00 : OPTION_BRIDGE_OFF;
+  return g_ready && fram_write(OPTIONS_ADDR, &v, 1);
+}
+
+bool logger_appendRecBlock(const RecBlock &block) {
+  if (block.n == 0) return true;
+  const uint8_t len = (uint8_t)(offsetof(RecBlock, s) + block.n * sizeof(RecSample));
+  return append(RECORDING, LogRecordType::REC_BLOCK, &block, len);
+}
+
+bool logger_recStart(uint8_t hz) {
+  if (!g_ready) return false;
+  if (!erase_regions()) return false;
+  g_hdr.rec_mode = (uint8_t)RecMode::RECORDING;
+  g_hdr.rec_hz = hz;
+  return header_store();
+}
+
+bool logger_recStop() {
+  if (!g_ready || g_hdr.rec_mode != (uint8_t)RecMode::RECORDING) return false;
+  g_hdr.rec_mode = (uint8_t)RecMode::HOLDING;
+  return header_store();
+}
+
+RecMode logger_recMode() {
+  return g_ready ? (RecMode)g_hdr.rec_mode : RecMode::OFF;
+}
+
+uint8_t logger_recHz() {
+  return g_hdr.rec_hz;
+}
+
+void logger_printRecStatus(Print &out) {
+  const uint32_t total = RECORDING.end - RECORDING.start;
+  const uint32_t used = g_hdr.rec_next - RECORDING.start;
+  out.print(F("rec: "));
+  if (g_hdr.rec_mode == (uint8_t)RecMode::RECORDING) {
+    out.print(F("RECORDING"));
+  } else if (g_hdr.rec_mode == (uint8_t)RecMode::HOLDING) {
+    out.print(F("holding a recording (logging paused)"));
+  } else {
+    out.println(F("off"));
+    return;
+  }
+  out.print(F(" at "));
+  out.print(g_hdr.rec_hz);
+  out.print(F(" Hz, used "));
+  out.print(used / 1024);
+  out.print('/');
+  out.print(total / 1024);
+  out.print(F(" KB"));
+  if (g_hdr.rec_full) {
+    out.print(F(", FULL"));
+  } else if (g_hdr.rec_mode == (uint8_t)RecMode::RECORDING && g_hdr.rec_hz) {
+    //~9.1 B per acceleration sample plus the 1 Hz full samples (~39 B/s)
+    const float bytes_per_s = g_hdr.rec_hz * (float)(sizeof(RecBlock) + FRAME_OVERHEAD) /
+                              Logging::REC_BLOCK_SAMPLES + 39.0f;
+    out.print(F(", ~"));
+    out.print((uint32_t)((total - used) / bytes_per_s / 60.0f));
+    out.print(F(" min left"));
+  }
+  out.println();
 }
 
 //---------------------------------------------------------------------------------------------
@@ -225,6 +341,7 @@ static const __FlashStringHelper *event_name(uint8_t code) {
     case EventCode::BATTERY_ALERT: return F("BATTERY_ALERT");
     case EventCode::CAL_CHANGED: return F("CAL_CHANGED");
     case EventCode::REARMED: return F("REARMED");
+    case EventCode::RESET_DURING: return F("RESET_DURING");
     default: return F("UNKNOWN");
   }
 }
@@ -277,9 +394,10 @@ static void print_record(Print &out, const FrameHeader &fh, const uint8_t *paylo
       print_csv(out, (int32_t)s.t_ms);
       print_csv(out, s.state);
       print_csv(out, s.phase);
-      print_csv(out, s.ax);
-      print_csv(out, s.ay);
-      print_csv(out, s.az);
+      print_csv(out, (int32_t)s.ax * Accel::MG_PER_LSB);
+      print_csv(out, (int32_t)s.ay * Accel::MG_PER_LSB);
+      print_csv(out, (int32_t)s.az * Accel::MG_PER_LSB);
+      print_csv(out, s.motion_mg);
       print_csv(out, s.temp_raw);
       print_csv(out, s.pressure_raw);
       print_csv(out, s.depth_cm);
@@ -307,6 +425,23 @@ static void print_record(Print &out, const FrameHeader &fh, const uint8_t *paylo
       out.println();
       break;
     }
+    case LogRecordType::REC_BLOCK: {
+      //one line per acceleration sample: R,boot,t_ms,ax_mg,ay_mg,az_mg
+      RecBlock b;
+      memset(&b, 0, sizeof(b));
+      memcpy(&b, payload, fh.len < sizeof(b) ? fh.len : sizeof(b));
+      if (b.n > Logging::REC_BLOCK_SAMPLES) b.n = Logging::REC_BLOCK_SAMPLES;
+      for (uint8_t i = 0; i < b.n; i++) {
+        out.print(F("R"));
+        print_csv(out, fh.boot);
+        print_csv(out, (int32_t)(b.t0_ms + b.s[i].dt_ms));
+        print_csv(out, (int32_t)b.s[i].ax * Accel::MG_PER_LSB);
+        print_csv(out, (int32_t)b.s[i].ay * Accel::MG_PER_LSB);
+        print_csv(out, (int32_t)b.s[i].az * Accel::MG_PER_LSB);
+        out.println();
+      }
+      break;
+    }
   }
 }
 
@@ -314,7 +449,7 @@ static void print_record(Print &out, const FrameHeader &fh, const uint8_t *paylo
 static uint8_t read_record(uint32_t addr, uint32_t end, FrameHeader &fh, uint8_t *payload) {
   if (addr + FRAME_OVERHEAD > end) return 0;
   if (!fram_read(addr, reinterpret_cast<uint8_t *>(&fh), sizeof(fh))) return 0;
-  if (fh.marker != RECORD_MARKER || fh.len > MAX_PAYLOAD || fh.type > (uint8_t)LogRecordType::CYCLE_SUMMARY) return 0;
+  if (fh.marker != RECORD_MARKER || fh.len > MAX_PAYLOAD || fh.type > (uint8_t)LogRecordType::REC_BLOCK) return 0;
   const uint8_t total = (uint8_t)(fh.len + FRAME_OVERHEAD);
   if (addr + total > end) return 0;
 
@@ -363,9 +498,14 @@ void logger_dump(Print &out) {
   out.println(F("# EVT,boot,seq,t_ms,code,data0,data1"));
   out.println(F("# CYC,boot,seq,cycle,start_ms,end_ms,bottom_cm,soak_min_cm,soak_max_cm,soak_ms,"
                 "drop_ms,drop_n,drop_peak_mg,drop_rms_mg,ret_ms,ret_n,ret_peak_mg,ret_rms_mg"));
-  out.println(F("# SMP,boot,seq,t_ms,state,phase,ax,ay,az,temp_raw,p_raw,depth_cm,mv,soc_x100,flags"));
-  dump_region(out, JOURNAL);
-  dump_region(out, SAMPLES);
+  out.println(F("# SMP,boot,seq,t_ms,state,phase,ax_mg,ay_mg,az_mg,motion_mg,temp_raw,p_raw,depth_cm,mv,soc_x100,flags"));
+  out.println(F("# R,boot,t_ms,ax_mg,ay_mg,az_mg (standalone recording)"));
+  if (g_hdr.rec_mode != (uint8_t)RecMode::OFF) {
+    dump_span(out, RECORDING.start, g_hdr.rec_next); //linear, never wraps
+  } else {
+    dump_region(out, JOURNAL);
+    dump_region(out, SAMPLES);
+  }
   out.println(F("END"));
 }
 
@@ -398,4 +538,5 @@ void logger_printInfo(Print &out) {
   out.print(g_hdr.sample_wrapped ? (SAMPLES.end - SAMPLES.start) : (g_hdr.sample_next - SAMPLES.start));
   out.print('/');
   out.println(SAMPLES.end - SAMPLES.start);
+  logger_printRecStatus(out);
 }

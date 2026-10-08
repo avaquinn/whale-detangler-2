@@ -26,7 +26,7 @@ import serial
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True)
-    ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--baud", type=int, default=38400)
     ap.add_argument("--send", help="console command to send after connecting (e.g. dump, 'stream 600')")
     ap.add_argument("--until-end", action="store_true", help="stop when the device prints END")
     ap.add_argument("-o", "--output", required=True)

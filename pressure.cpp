@@ -10,6 +10,24 @@
 #include "config.h"
 
 static PressureCal g_cal = {0, 0.0f, 0};
+static void (*g_idle_hook)() = nullptr;
+static bool g_enabled = true;
+
+void pressure_setEnabled(bool enabled) {
+  g_enabled = enabled;
+}
+
+void pressure_setIdleHook(void (*hook)()) {
+  g_idle_hook = hook;
+}
+
+//like delay(), but lets other work (the standalone recorder) run while we wait
+static void wait_ms(uint16_t ms) {
+  const uint32_t start = millis();
+  while ((uint32_t)(millis() - start) < ms) {
+    if (g_idle_hook) g_idle_hook();
+  }
+}
 
 void pressure_setCal(const PressureCal &cal) {
   g_cal = cal;
@@ -52,13 +70,14 @@ bool pressure_calibrate_afe() {
 
 //raw = SUM of ADXL_AVG_SAMPLES fresh conversions (keeps the averaging's extra resolution)
 PressureResult pressure_read_raw(int32_t &raw) {
+  if (!g_enabled) return PressureResult::DISABLED;
   bridge_power(true);
-  delay(Pressure::ADXL_SETTLE_MS);
+  wait_ms(Pressure::ADXL_SETTLE_MS);
 
   int32_t sum = 0;
   bool clipped = false;
   for (uint8_t i = 0; i < Pressure::ADXL_AVG_SAMPLES; i++) {
-    if (i > 0) delay(Pressure::ADXL_ODR_PERIOD_MS); //wait for a new conversion
+    if (i > 0) wait_ms(Pressure::ADXL_ODR_PERIOD_MS); //wait for a new conversion
     int16_t v = 0;
     if (!adxl_read_adc(v)) {
       bridge_power(false);
@@ -130,7 +149,7 @@ static bool nau_wait(uint8_t reg, uint8_t mask, bool set, uint16_t timeout_ms) {
     if (!nau_read(reg, v)) return false;
     if (((v & mask) != 0) == set) return true;
     if ((uint32_t)(millis() - start) >= timeout_ms) return false;
-    delay(1);
+    wait_ms(1);
   }
 }
 
@@ -188,11 +207,12 @@ bool pressure_init() {
 
 //raw = AVERAGE of NAU_AVG_SAMPLES conversions after the power-up discard
 PressureResult pressure_read_raw(int32_t &raw) {
+  if (!g_enabled) return PressureResult::DISABLED;
   if (!nau_power_up()) {
     nau_power_down();
     return PressureResult::FAILED;
   }
-  delay(Pressure::NAU_SETTLE_MS);
+  wait_ms(Pressure::NAU_SETTLE_MS);
 
   int32_t v = 0;
   for (uint8_t i = 0; i < Pressure::NAU_DISCARD; i++) {

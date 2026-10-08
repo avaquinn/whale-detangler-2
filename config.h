@@ -11,7 +11,7 @@
 //feature flags
 //---------------------------------------------------------------------------------------------
 #define DEBUG_SERIAL 1 //per-sample human + PLOT lines on Serial (the command console is always on)
-#define SERIAL_BAUD 115200
+#define SERIAL_BAUD 38400 //0.2% error at 8 MHz. 115200 is 3.5% off: the board can send but cannot receive
 
 //1 = PYRO_CHG / PYRO_FIRE are never driven high. The full state machine still runs and logs
 //(including the persistent FIRED latch), so detection can be tested on the bench.
@@ -157,16 +157,23 @@ static_assert(Depth::MIN_FIRE_DEPTH_CM >= Depth::ARM_DEPTH_CM, "never fire shall
 namespace Accel {
   //±8 g range => 4 mg per LSB
   constexpr uint8_t MG_PER_LSB = 4;
-  //activity threshold for tap/motion interrupts (LSB of the ±8 g range, referenced mode)
-  constexpr uint16_t ACTIVITY_THRESHOLD = 140; //~560 mg above the reference
+  //activity threshold for tap interrupts (LSB of the ±8 g range, referenced mode)
+  constexpr uint16_t ACTIVITY_THRESHOLD = 250; //~1 g above the reference
   constexpr uint8_t ACTIVITY_TIME = 1; //samples above threshold; taps are short
+  //"motion" = |a| minus a slowly learned gravity baseline, so per-part scale/offset error
+  //(this Rev 1.0 board reads ~1.23 g at rest) is not mistaken for constant motion
+  constexpr uint32_t GRAVITY_TAU_MS = 60000UL;
 }
 
 namespace Ui {
-  //triple-tap (three activity events inside the window) shows battery status, only at the surface
+  //triple-tap shows battery status, only at the surface. A tap is a short burst of activity
+  //(<= TAP_MAX_MS) followed by TAP_QUIET_MS of calm; continuous handling never qualifies.
   constexpr uint8_t TAP_COUNT = 3;
   constexpr uint16_t TAP_WINDOW_MS = 1500;
-  constexpr uint16_t TAP_DEBOUNCE_MS = 120;
+  constexpr uint16_t TAP_MAX_MS = 80;
+  constexpr uint16_t TAP_QUIET_MS = 150;
+  //"live on" console stream rate for the PC viewer
+  constexpr uint16_t LIVE_PERIOD_MS = 40;
   constexpr uint16_t BATTERY_DISPLAY_MS = 5000;
 
   //SOC (x100) to LED class; placeholder until SOC -> days-left is characterised
@@ -186,7 +193,14 @@ namespace Logging {
   constexpr uint32_t SAMPLE_START = 0x30000UL;
   constexpr uint32_t SAMPLE_END = 0x40000UL;
 
-  //1 = also log samples while at the surface (useful on the bench, fills the ring quickly)
+  //standalone recording ("rec <hz> YES"): acceleration at a chosen rate, packed REC_BLOCK_SAMPLES
+  //per record (~9 bytes/sample), using the WHOLE data area (journal + sample regions) until full
+  constexpr uint8_t REC_BLOCK_SAMPLES = 15;
+  constexpr uint8_t REC_MIN_HZ = 1;
+  constexpr uint8_t REC_MAX_HZ = 50; //accelerometer runs at 100 Hz
+
+  //default for the console "logsurface on|off" toggle: also log samples while at the surface
+  //(useful on the bench; at 1 Hz the sample ring holds roughly the last 30 minutes)
   constexpr bool LOG_SURFACE_SAMPLES = false;
 }
 

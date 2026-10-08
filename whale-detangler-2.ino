@@ -45,10 +45,20 @@ static uint32_t g_last_sample_ms = 0;
 static uint8_t g_faulted_sensors = 0; //SensorId bits currently failing (edge-logged)
 static bool g_activity_pending = false;
 
-//triple-tap tracking
+//triple-tap tracking: activity events are grouped into bursts; a short burst followed by quiet is a tap
+static bool g_burst_active = false;
+static uint32_t g_burst_start_ms = 0;
+static uint32_t g_last_activity_ms = 0;
 static uint8_t g_tap_count = 0;
 static uint32_t g_first_tap_ms = 0;
-static uint32_t g_last_tap_ms = 0;
+
+//latest completed sample, reused by the "live" stream for the fields it does not re-read
+static SensorSnapshot g_last_snap = {};
+static uint32_t g_last_live_ms = 0;
+
+//standalone recording: acceleration samples collected into a block, written when full
+static RecBlock g_rec_block = {};
+static uint32_t g_next_rec_ms = 0;
 
 #if DEBUG_SERIAL
 static const __FlashStringHelper *state_name(DeviceState s) {
@@ -117,6 +127,10 @@ static void update_persistent_status_led(uint32_t now_ms) {
     status_setOverride(PersistentStatus::SERVICE_REQUIRED, now_ms);
   } else if (g_state == DeviceState::FIRED) {
     status_setOverride(PersistentStatus::FIRED, now_ms);
+  } else if (logger_recMode() == RecMode::RECORDING) {
+    status_setOverride(PersistentStatus::RECORDING, now_ms);
+  } else if (logger_recMode() == RecMode::HOLDING) {
+    status_setOverride(PersistentStatus::RECORDING_HELD, now_ms);
   } else if (!pressure_getCal().valid) {
     status_setOverride(PersistentStatus::SERVICE_REQUIRED, now_ms); //uncalibrated: cannot arm
   } else if (g_have_battery && g_last_batt.soc_x100 < Ui::SOC_X100_RED_MIN) {
@@ -126,12 +140,8 @@ static void update_persistent_status_led(uint32_t now_ms) {
   }
 }
 
-//count activity events; three inside the window at the surface shows the battery LEDs
-static void handle_tap(uint32_t now_ms) {
-  if ((uint32_t)(now_ms - g_last_tap_ms) < Ui::TAP_DEBOUNCE_MS) {
-    return;
-  }
-  g_last_tap_ms = now_ms;
+//three taps inside the window at the surface show the battery LEDs
+static void register_tap(uint32_t now_ms) {
   if (g_tap_count == 0 || (uint32_t)(now_ms - g_first_tap_ms) > Ui::TAP_WINDOW_MS) {
     g_tap_count = 0;
     g_first_tap_ms = now_ms;
@@ -141,6 +151,25 @@ static void handle_tap(uint32_t now_ms) {
     if (g_state == DeviceState::SAFE_IDLE || g_state == DeviceState::FIRED) {
       status_showBatteryDisplay(g_have_battery ? battery_display_from_soc(g_last_batt.soc_x100)
                                                : BatteryDisplay::UNKNOWN, now_ms);
+    }
+  }
+}
+
+//group activity events into bursts. Picking the board up or moving it produces a long run of
+//events and never counts; a tap is a burst no longer than TAP_MAX_MS followed by TAP_QUIET_MS of calm.
+static void update_tap_filter(bool activity, uint32_t now_ms) {
+  if (activity) {
+    if (!g_burst_active) {
+      g_burst_active = true;
+      g_burst_start_ms = now_ms;
+    }
+    g_last_activity_ms = now_ms;
+    return;
+  }
+  if (g_burst_active && (uint32_t)(now_ms - g_last_activity_ms) >= Ui::TAP_QUIET_MS) {
+    g_burst_active = false;
+    if ((uint32_t)(g_last_activity_ms - g_burst_start_ms) <= Ui::TAP_MAX_MS) {
+      register_tap(now_ms);
     }
   }
 }
@@ -173,20 +202,29 @@ static void build_snapshot(SensorSnapshot &snap, uint32_t now_ms) {
   snap = {};
   snap.t_ms = now_ms;
 
-  if (adxl_read_xyz(snap.ax, snap.ay, snap.az)) snap.flags |= SNAP_VALID_ACCEL;
+  if (adxl_read_xyz(snap.ax, snap.ay, snap.az)) {
+    snap.flags |= SNAP_VALID_ACCEL;
+    snap.motion_mg = adxl_motion_mg(snap.ax, snap.ay, snap.az, now_ms);
+  }
   if (adxl_read_temp(snap.temp_raw)) snap.flags |= SNAP_VALID_TEMP;
   track_sensor(SENSOR_ACCEL, snap.flags & SNAP_VALID_ACCEL, now_ms);
 
+  logger_markStage(STAGE_BRIDGE); //breadcrumb: if a reset hits now, the next boot reports it
   PressureResult pr = pressure_read_raw(snap.pressure_raw);
+  logger_markStage(STAGE_NONE);
   if (pr == PressureResult::OK) {
     snap.flags |= SNAP_VALID_PRESSURE;
     if (pressure_toDepthCm(snap.pressure_raw, snap.depth_cm)) snap.flags |= SNAP_VALID_DEPTH;
   } else if (pr == PressureResult::CLIPPED) {
     snap.flags |= SNAP_PRESSURE_CLIP;
   }
-  track_sensor(SENSOR_PRESSURE, pr == PressureResult::OK, now_ms);
+  if (pr != PressureResult::DISABLED) {
+    track_sensor(SENSOR_PRESSURE, pr == PressureResult::OK, now_ms);
+  }
 
+  logger_markStage(STAGE_GAUGE);
   read_battery(now_ms, false);
+  logger_markStage(STAGE_NONE);
   if (g_have_battery) {
     snap.batt = g_last_batt;
     snap.flags |= SNAP_VALID_BATTERY;
@@ -252,45 +290,93 @@ static void run_state_machine(const DetectorOutput &d, bool armed, uint32_t now_
   }
 }
 
-#if DEBUG_SERIAL
-static void debug_print(const SensorSnapshot &snap) {
-  Serial.print(F("t="));
-  Serial.print(snap.t_ms);
-  Serial.print(F(" state="));
-  Serial.print(state_name(g_state));
-  Serial.print(F(" phase="));
-  Serial.print(snap.phase);
-  Serial.print(F(" xyz=("));
-  Serial.print(snap.ax);
+//machine-readable sample line for tools/viewer.py (same columns as the dump's SMP rows, minus boot/seq):
+//S,t_ms,state,phase,ax_mg,ay_mg,az_mg,motion_mg,temp_raw,p_raw,depth_cm,mv,soc_x100,flags
+//depth_cm is empty when there is no calibrated depth
+static void print_stream_line(const SensorSnapshot &s) {
+  Serial.print(F("S,"));
+  Serial.print(s.t_ms);
   Serial.print(',');
-  Serial.print(snap.ay);
+  Serial.print(s.state);
   Serial.print(',');
-  Serial.print(snap.az);
-  Serial.print(F(") p_raw="));
-  Serial.print(snap.pressure_raw);
-  Serial.print(F(" depth_cm="));
-  if (snap.flags & SNAP_VALID_DEPTH) Serial.print(snap.depth_cm);
-  else Serial.print(F("--"));
-  Serial.print(F(" rate="));
-  Serial.print(detector_rate_cm_s());
-  Serial.print(F(" soc="));
-  Serial.print(g_have_battery ? g_last_batt.soc_x100 : 0);
-  Serial.print(F(" flags=0x"));
-  Serial.println(snap.flags, HEX);
+  Serial.print(s.phase);
+  Serial.print(',');
+  Serial.print((int32_t)s.ax * Accel::MG_PER_LSB);
+  Serial.print(',');
+  Serial.print((int32_t)s.ay * Accel::MG_PER_LSB);
+  Serial.print(',');
+  Serial.print((int32_t)s.az * Accel::MG_PER_LSB);
+  Serial.print(',');
+  Serial.print(s.motion_mg);
+  Serial.print(',');
+  Serial.print(s.temp_raw);
+  Serial.print(',');
+  Serial.print(s.pressure_raw);
+  Serial.print(',');
+  if (s.flags & SNAP_VALID_DEPTH) Serial.print(s.depth_cm);
+  Serial.print(',');
+  Serial.print(s.batt.voltage_mv);
+  Serial.print(',');
+  Serial.print(s.batt.soc_x100);
+  Serial.print(',');
+  Serial.println(s.flags);
+}
 
-  //PLOT,<t_ms>,<x>,<y>,<z>,<DeviceState>,<activity> for realtime_3d_plot.py
-  Serial.print(F("PLOT,"));
-  Serial.print(snap.t_ms);
-  Serial.print(',');
-  Serial.print(snap.ax);
-  Serial.print(',');
-  Serial.print(snap.ay);
-  Serial.print(',');
-  Serial.print(snap.az);
-  Serial.print(',');
-  Serial.print((uint8_t)g_state);
-  Serial.print(',');
-  Serial.println((snap.flags & SNAP_ACCEL_ACTIVITY) ? 1 : 0);
+//standalone recording: one acceleration sample every 1/rec_hz s, packed into blocks of
+//REC_BLOCK_SAMPLES. Each sample carries its own time offset, so the short gaps while a full
+//sample reads the pressure sensor (~70 ms) are recorded honestly rather than smeared.
+//also called while a pressure reading waits (pressure_setIdleHook), so it reads the clock itself
+static void record_tick() {
+  const uint32_t now_ms = millis();
+  if (logger_recMode() != RecMode::RECORDING) {
+    g_rec_block.n = 0; //stopped or full: drop the partial block
+    g_next_rec_ms = now_ms;
+    return;
+  }
+  if ((int32_t)(now_ms - g_next_rec_ms) < 0) {
+    return;
+  }
+  const uint16_t period = 1000 / logger_recHz();
+  g_next_rec_ms += period;
+  if ((int32_t)(now_ms - g_next_rec_ms) >= 0) {
+    g_next_rec_ms = now_ms + period; //fell behind (blocking read): resume the schedule, no burst
+  }
+
+  if (g_rec_block.n == 0) {
+    g_rec_block.t0_ms = now_ms;
+  }
+  RecSample &s = g_rec_block.s[g_rec_block.n];
+  s.dt_ms = (uint16_t)(now_ms - g_rec_block.t0_ms);
+  if (!adxl_read_xyz(s.ax, s.ay, s.az)) {
+    return;
+  }
+  if (++g_rec_block.n >= Logging::REC_BLOCK_SAMPLES) {
+    (void)logger_appendRecBlock(g_rec_block);
+    g_rec_block.n = 0;
+  }
+}
+
+//"live on": fresh accelerometer reading at 25 Hz, other fields from the latest full sample
+static void stream_live(uint32_t now_ms) {
+  if (!console_liveMode() || (uint32_t)(now_ms - g_last_live_ms) < Ui::LIVE_PERIOD_MS) {
+    return;
+  }
+  g_last_live_ms = now_ms;
+  SensorSnapshot s = g_last_snap;
+  s.t_ms = now_ms;
+  s.state = (uint8_t)g_state;
+  s.phase = (uint8_t)detector_phase();
+  if (adxl_read_xyz(s.ax, s.ay, s.az)) {
+    s.motion_mg = adxl_motion_mg(s.ax, s.ay, s.az, now_ms);
+  }
+  print_stream_line(s);
+}
+
+#if DEBUG_SERIAL
+//one machine-readable line per sample; tools/viewer.py decodes it into plain words
+//(a second human-readable line used to duplicate it, and flash is nearly full)
+static void debug_print(const SensorSnapshot &snap) {
+  print_stream_line(snap);
 }
 #endif
 
@@ -319,6 +405,8 @@ void setup() {
 
   PressureCal cal;
   if (logger_getCal(cal)) pressure_setCal(cal);
+  pressure_setIdleHook(record_tick); //keep recording while the bridge settles
+  pressure_setEnabled(logger_bridgeEnabled());
   pyro_init(logger_isFired());
 
   const uint32_t now = millis();
@@ -341,6 +429,23 @@ void setup() {
   }
   if (!pressure_getCal().valid) {
     Serial.println(F("WARNING: no depth calibration; the device will not arm (see 'cal')"));
+  }
+  if (logger_resetStage() != STAGE_NONE) {
+    static const char stage_names[] PROGMEM = "?\0bridge on (pressure read)\0writing FRAM\0reading fuel gauge";
+    const char *name = stage_names;
+    for (uint8_t i = 0; i < logger_resetStage(); i++) name += strlen_P(name) + 1;
+    Serial.print(F("NOTE: the previous boot was reset while: "));
+    Serial.println((const __FlashStringHelper *)name);
+    log_event(now, EventCode::RESET_DURING, logger_resetStage(), g_reset_cause);
+  }
+  if (!logger_bridgeEnabled()) {
+    Serial.println(F("NOTE: bridge is OFF (no pressure/depth); 'bridge on' to restore"));
+  }
+  if (logger_recMode() == RecMode::RECORDING) {
+    Serial.print(F("recording continues: "));
+    logger_printRecStatus(Serial);
+  } else if (logger_recMode() == RecMode::HOLDING) {
+    Serial.println(F("a recording is held in FRAM (logging paused): 'dump' it, then 'rec clear YES'"));
   }
 
 #if ENABLE_WATCHDOG
@@ -365,10 +470,12 @@ void loop() {
     log_event(now_ms, EventCode::BATTERY_ALERT, battery_alertBits(alerts), g_last_batt.voltage_mv);
   }
 
-  if (adxl_poll_activity()) {
-    g_activity_pending = true;
-    handle_tap(now_ms);
-  }
+  const bool activity = adxl_poll_activity();
+  if (activity) g_activity_pending = true;
+  update_tap_filter(activity, now_ms);
+
+  stream_live(now_ms);
+  record_tick();
 
   //latched states: keep LEDs, console, and alerts alive; no sensing or control
   if (g_state == DeviceState::FIRED || g_state == DeviceState::FAULT ||
@@ -392,9 +499,15 @@ void loop() {
 
   snap.state = (uint8_t)g_state;
   snap.phase = (uint8_t)phase;
-  if ((phase != DeployPhase::SURFACE || Logging::LOG_SURFACE_SAMPLES) && !logger_appendSample(snap)) {
+  const bool log_sample = phase != DeployPhase::SURFACE || console_logSurface() ||
+                          logger_recMode() == RecMode::RECORDING; //recordings keep depth/battery/state too
+  logger_markStage(STAGE_FRAM);
+  const bool stored = !log_sample || logger_appendSample(snap);
+  logger_markStage(STAGE_NONE);
+  if (!stored) {
     track_sensor(SENSOR_STORAGE, false, now_ms);
   }
+  g_last_snap = snap;
 
   CycleSummary summary;
   if (cycle_update(snap, phase, summary)) {
