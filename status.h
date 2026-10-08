@@ -17,7 +17,9 @@ enum class PersistentStatus : uint8_t {
   NONE = 0,
   SERVICE_REQUIRED, //red blink
   FIRED, //yellow/red blink continuously
-  LOW_BATTERY_NONOP //red solid
+  LOW_BATTERY_NONOP, //red solid
+  RECORDING, //short green flash every 2 s (standalone recording running)
+  RECORDING_HELD //slow green/yellow alternation (recording stopped or full, waiting for dump)
 };
 
 void status_init();

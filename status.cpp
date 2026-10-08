@@ -127,6 +127,14 @@ void status_tick(uint32_t now_ms) {
       bool phase = step_blink(now_ms, BLINK_FAST_MS); //yellow/red blink constantly after firing until battery discharged
       set_leds(!phase, false, phase); //when phase is true => yellow on, red off; else red on, yellow off
       return; }
+    case PersistentStatus::RECORDING: {
+      bool flash = (now_ms % 2000UL) < 60; //brief, so recording costs little battery
+      set_leds(false, flash, false);
+      return; }
+    case PersistentStatus::RECORDING_HELD: {
+      bool phase = step_blink(now_ms, BLINK_SLOW_MS);
+      set_leds(false, phase, !phase);
+      return; }
     case PersistentStatus::NONE:
     default:
       break; //fall through to next priority level

@@ -4,7 +4,6 @@
   - The logger assigns cycle_idx when the summary is written
 */
 #include "cycle.h"
-#include "ADXL.h"
 
 static bool g_active = false;
 static CycleSummary g_sum;
@@ -19,7 +18,7 @@ void cycle_init() {
 static void profile_add(AccelProfile &p, float &sum_sq, const SensorSnapshot &snap, uint32_t dt) {
   p.duration_ms += dt;
   if (!(snap.flags & SNAP_VALID_ACCEL)) return;
-  uint16_t dyn = adxl_dynamic_mg(snap.ax, snap.ay, snap.az);
+  uint16_t dyn = snap.motion_mg;
   if (dyn > p.peak_mg) p.peak_mg = dyn;
   sum_sq += (float)dyn * dyn;
   if (p.sample_count < 0xFFFF) p.sample_count++;

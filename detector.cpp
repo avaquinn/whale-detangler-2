@@ -15,7 +15,6 @@
   - Samples without a valid calibrated depth are never used as evidence
 */
 #include "detector.h"
-#include "ADXL.h"
 
 static constexpr uint8_t HIST_LEN = Detector::SMOOTH_S + Detector::RATE_LAG_S;
 static constexpr uint16_t HIST_STEP_MS = 1000;
@@ -194,7 +193,7 @@ static void update_motion(const SensorSnapshot &snap, uint32_t dt) {
   if (!(snap.flags & SNAP_VALID_ACCEL) || g_phase == DeployPhase::DESCENT || rising) {
     return;
   }
-  if (adxl_dynamic_mg(snap.ax, snap.ay, snap.az) >= Detector::MOTION_MG) {
+  if (snap.motion_mg >= Detector::MOTION_MG) {
     g_motion_ms += dt;
     g_last_motion_ms = snap.t_ms;
   } else if ((uint32_t)(snap.t_ms - g_last_motion_ms) >= Detector::CALM_RESET_MS) {

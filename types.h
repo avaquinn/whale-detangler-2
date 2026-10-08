@@ -78,6 +78,7 @@ struct __attribute__((packed)) SensorSnapshot {
   int16_t ax; //raw accelerometer counts (Accel::MG_PER_LSB)
   int16_t ay;
   int16_t az;
+  uint16_t motion_mg; //| |a| - learned gravity baseline |, mg
   int16_t temp_raw; //ADXL363 temperature, raw counts (for drift correlation)
   int32_t pressure_raw; //front-end counts (see config.h for per-backend meaning)
   int16_t depth_cm; //calibrated depth, valid only with SNAP_VALID_DEPTH
@@ -90,7 +91,7 @@ struct __attribute__((packed)) SensorSnapshot {
 struct __attribute__((packed)) AccelProfile { //summary of acceleration during descent or ascent
   uint32_t duration_ms;
   uint16_t sample_count;
-  uint16_t peak_mg; //max dynamic acceleration | |a| - 1 g |
+  uint16_t peak_mg; //max motion_mg (|a| relative to the gravity baseline)
   uint16_t rms_mg; //RMS dynamic acceleration
 };
 
@@ -110,7 +111,28 @@ enum class LogRecordType : uint8_t {
   BOOT = 0,
   SAMPLE = 1,
   EVENT = 2,
-  CYCLE_SUMMARY = 3
+  CYCLE_SUMMARY = 3,
+  REC_BLOCK = 4 //standalone recording: a block of acceleration samples
+};
+
+//standalone recording: acceleration only, timestamps relative to the block start
+struct __attribute__((packed)) RecSample {
+  uint16_t dt_ms; //ms after RecBlock::t0_ms
+  int16_t ax; //raw counts (Accel::MG_PER_LSB)
+  int16_t ay;
+  int16_t az;
+};
+
+struct __attribute__((packed)) RecBlock {
+  uint32_t t0_ms;
+  uint8_t n; //samples used
+  RecSample s[Logging::REC_BLOCK_SAMPLES];
+};
+
+enum class RecMode : uint8_t {
+  OFF = 0, //normal logging
+  RECORDING, //recording: everything goes to the recording area
+  HOLDING //stopped or full: the recording is kept, all other logging is paused until "rec clear YES"
 };
 
 enum class EventCode : uint8_t {
@@ -128,7 +150,15 @@ enum class EventCode : uint8_t {
   PYRO_FAULT, //data0 = 1 start failed, 2 fire failed
   BATTERY_ALERT, //data0 = BatteryAlerts bits, data1 = voltage_mv
   CAL_CHANGED, //data0 = valid
-  REARMED //fired latch cleared from the console
+  REARMED, //fired latch cleared from the console
+  RESET_DURING //previous boot was reset mid-activity: data0 = ResetStage, data1 = MCUSR of this boot
+};
+
+enum ResetStage : uint8_t { //breadcrumb kept in FRAM: what the firmware was doing if a reset hits
+  STAGE_NONE = 0,
+  STAGE_BRIDGE = 1, //strain-gauge bridge powered for a pressure reading
+  STAGE_FRAM = 2, //writing a sample to FRAM
+  STAGE_GAUGE = 3 //reading the fuel gauge over I2C
 };
 
 enum SensorId : uint8_t { //bitmask used in SENSOR_FAULT / SENSOR_RECOVERED events

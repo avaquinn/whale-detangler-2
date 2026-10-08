@@ -62,6 +62,7 @@ static void run(const Scenario &sc) {
     s.flags = SNAP_VALID_ACCEL | SNAP_VALID_PRESSURE | (sc.valid_depth ? SNAP_VALID_DEPTH : 0);
     double m = sc.motion_mg(t);
     s.ax = (int16_t)(m / 4 * 0.7); s.ay = 0; s.az = (int16_t)(250 + m / 4 * 0.7);
+    s.motion_mg = (uint16_t)m; //firmware computes this against a learned gravity baseline
 
     DetectorOutput o = detector_evaluate(s, charging);
     DeployPhase ph = detector_phase();

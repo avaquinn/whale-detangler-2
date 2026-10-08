@@ -2,7 +2,7 @@
   MAX17048 fuel gauge I2C bring-up (standalone, independent of the main firmware)
   - Parks pyro outputs low, bridge PFET off, and both SPI chip selects high
   - Scans the I2C bus, dumps the gauge registers once, then streams VCELL/SOC/ALRT every 2 s
-  Board: Arduino Pro or Pro Mini, ATmega328P (3.3V, 8 MHz). Serial monitor: 115200.
+  Board: Arduino Pro or Pro Mini, ATmega328P (3.3V, 8 MHz). Serial monitor: 38400.
 */
 #include <Wire.h>
 
@@ -126,7 +126,7 @@ void setup() {
   park_outputs();
   pinMode(PIN_ALERT, INPUT_PULLUP);
 
-  Serial.begin(115200);
+  Serial.begin(38400); //115200 is 3.5% off at 8 MHz: the board can send but cannot receive
   delay(200);
   Serial.println(F("\n== MAX17048 I2C bring-up =="));
 

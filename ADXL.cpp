@@ -184,10 +184,31 @@ static uint16_t isqrt32(uint32_t v) {
   return (uint16_t)res;
 }
 
-uint16_t adxl_dynamic_mg(int16_t x, int16_t y, int16_t z) {
+uint16_t adxl_magnitude_mg(int16_t x, int16_t y, int16_t z) {
   uint32_t sq = (uint32_t)((int32_t)x * x) + (uint32_t)((int32_t)y * y) + (uint32_t)((int32_t)z * z);
-  int32_t mag_mg = (int32_t)isqrt32(sq) * Accel::MG_PER_LSB;
-  int32_t dyn = mag_mg - 1000;
+  uint32_t mg = (uint32_t)isqrt32(sq) * Accel::MG_PER_LSB;
+  return (uint16_t)(mg > 0xFFFF ? 0xFFFF : mg);
+}
+
+//gravity baseline: a slow, time-based average of |a|. Comparing against it (instead of a fixed
+//1000 mg) makes motion immune to per-part scale/offset error and to temperature drift.
+static float g_gravity_mg = 0;
+static uint32_t g_gravity_t_ms = 0;
+static bool g_gravity_init = false;
+
+uint16_t adxl_motion_mg(int16_t x, int16_t y, int16_t z, uint32_t t_ms) {
+  const float mag = adxl_magnitude_mg(x, y, z);
+  if (!g_gravity_init) {
+    g_gravity_mg = mag;
+    g_gravity_init = true;
+  } else {
+    float k = (float)(t_ms - g_gravity_t_ms) / (float)Accel::GRAVITY_TAU_MS;
+    if (k > 1.0f) k = 1.0f;
+    g_gravity_mg += (mag - g_gravity_mg) * k;
+  }
+  g_gravity_t_ms = t_ms;
+
+  float dyn = mag - g_gravity_mg;
   if (dyn < 0) dyn = -dyn;
-  return (uint16_t)(dyn > 0xFFFF ? 0xFFFF : dyn);
+  return (uint16_t)(dyn > 65535.0f ? 65535 : dyn + 0.5f);
 }

@@ -3,7 +3,7 @@
   - Parks pyro outputs low, bridge PFET off, and BOTH SPI chip selects high before SPI starts
   - Checks device ID (RDID), write-enable latch (WREN/WRDI), then a non-destructive
     write/readback test: original bytes are saved and restored afterwards
-  Board: Arduino Pro or Pro Mini, ATmega328P (3.3V, 8 MHz). Serial monitor: 115200.
+  Board: Arduino Pro or Pro Mini, ATmega328P (3.3V, 8 MHz). Serial monitor: 38400.
 */
 #include <SPI.h>
 
@@ -165,7 +165,7 @@ void setup() {
   drive_pin(PIN_PYRO_FIRE, LOW);
   drive_pin(PIN_PFET_EN, HIGH);
 
-  Serial.begin(115200);
+  Serial.begin(38400); //115200 is 3.5% off at 8 MHz: the board can send but cannot receive
   delay(200);
   Serial.println(F("\n== MB85RS2MTA SPI FRAM bring-up =="));
 

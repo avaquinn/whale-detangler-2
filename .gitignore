@@ -5,3 +5,4 @@ build/
 test/detector_sim/sim.exe
 # personal notes (contains client contact details)
 context.txt
+recording_*.csv

@@ -21,9 +21,39 @@ static uint8_t g_len = 0;
 static int32_t g_pending_zero = 0; //"cal zero" result waiting for "cal span"
 static bool g_have_pending_zero = false;
 
+static bool g_live = false;
+static bool g_log_surface = Logging::LOG_SURFACE_SAMPLES;
+
+bool console_liveMode() {
+  return g_live;
+}
+
+bool console_logSurface() {
+  return g_log_surface;
+}
+
+//parse "on" / "off"; false if neither
+static bool parse_on_off(const char *arg, bool &value) {
+  if (arg && strcmp(arg, "on") == 0) {
+    value = true;
+    return true;
+  }
+  if (arg && strcmp(arg, "off") == 0) {
+    value = false;
+    return true;
+  }
+  return false;
+}
+
 static void print_help() {
   Serial.println(F("commands:"));
   Serial.println(F("  help | info | dump"));
+  Serial.println(F("  live on|off              stream S lines at 25 Hz for tools/viewer.py"));
+  Serial.println(F("  logsurface on|off        also log samples to FRAM at the surface (bench)"));
+  Serial.println(F("  rec <hz> YES             ERASE logs, record accel at 1-50 Hz to FRAM (no laptop needed)"));
+  Serial.println(F("  rec | rec stop           recording status / stop and keep the recording"));
+  Serial.println(F("  rec clear YES            erase the recording, back to normal logging"));
+  Serial.println(F("  bridge on|off            power the strain-gauge bridge or not (kept across resets)"));
   Serial.println(F("  serial <id>              set board serial (e.g. 26.10.10001)"));
   Serial.println(F("  stream <seconds>         PRS,t_ms,raw,depth_cm,temp_raw,result at ~10 Hz"));
   Serial.println(F("  cal zero                 record raw at 0 depth (surface / atmospheric)"));
@@ -42,7 +72,9 @@ static bool averaged_raw(int32_t &out) {
     int32_t raw = 0;
     PressureResult r = pressure_read_raw(raw);
     if (r != PressureResult::OK) {
-      Serial.println(r == PressureResult::CLIPPED ? F("ERR front end clipped") : F("ERR read failed"));
+      Serial.println(r == PressureResult::CLIPPED    ? F("ERR front end clipped")
+                     : r == PressureResult::DISABLED ? F("ERR bridge is off ('bridge on')")
+                                                     : F("ERR read failed"));
       return false;
     }
     sum += raw;
@@ -141,6 +173,33 @@ static void cmd_stream(char *args) {
   Serial.println(F("END"));
 }
 
+//rec <hz> YES | rec stop | rec clear YES
+static void cmd_rec(char *args) {
+  char *a = strtok(args, " ");
+  char *b = strtok(NULL, " ");
+  if (a && strcmp(a, "stop") == 0) {
+    Serial.println(logger_recStop() ? F("OK recording stopped and kept; 'dump' to read it") : F("ERR not recording"));
+  } else if (a && strcmp(a, "clear") == 0 && b && strcmp(b, "YES") == 0) {
+    Serial.println(logger_erase() ? F("OK recording erased, normal logging") : F("ERR"));
+  } else if (a && b && strcmp(b, "YES") == 0) {
+    long hz = atol(a);
+    if (hz < Logging::REC_MIN_HZ || hz > Logging::REC_MAX_HZ) {
+      Serial.println(F("ERR rate must be 1-50 Hz"));
+      return;
+    }
+    Serial.println(F("erasing (about 1 s)..."));
+    if (logger_recStart((uint8_t)hz)) {
+      Serial.print(F("OK "));
+      logger_printRecStatus(Serial);
+      Serial.println(F("You can unplug the laptop; recording continues on battery (green flash every 2 s)."));
+    } else {
+      Serial.println(F("ERR could not start (FRAM?)"));
+    }
+  } else {
+    Serial.println(F("ERR rec <hz> YES | rec stop | rec clear YES   (starting a recording ERASES the logs)"));
+  }
+}
+
 static void execute(char *line, bool safe) {
   char *cmd = strtok(line, " ");
   if (!cmd) return;
@@ -156,6 +215,21 @@ static void execute(char *line, bool safe) {
     Serial.println(PRESSURE_FRONTEND == PRESSURE_FE_NAU7802 ? F("NAU7802") : F("ADXL363 aux ADC"));
     Serial.print(F("bench_no_pyro: "));
     Serial.println(BENCH_NO_PYRO);
+    Serial.print(F("bridge: "));
+    Serial.println(logger_bridgeEnabled() ? F("on") : F("OFF"));
+    Serial.print(F("live: "));
+    Serial.print(g_live);
+    Serial.print(F("  logsurface: "));
+    Serial.println(g_log_surface);
+    return;
+  }
+  //read-only, so allowed in every state
+  if (strcmp(cmd, "live") == 0) {
+    Serial.println(parse_on_off(rest, g_live) ? F("OK") : F("ERR live on|off"));
+    return;
+  }
+  if (strcmp(cmd, "rec") == 0 && !rest) {
+    logger_printRecStatus(Serial);
     return;
   }
 
@@ -166,6 +240,19 @@ static void execute(char *line, bool safe) {
 
   if (strcmp(cmd, "dump") == 0) {
     logger_dump(Serial);
+  } else if (strcmp(cmd, "rec") == 0) {
+    cmd_rec(rest);
+  } else if (strcmp(cmd, "bridge") == 0) {
+    bool on = true;
+    if (!parse_on_off(rest, on)) {
+      Serial.println(F("ERR bridge on|off"));
+    } else {
+      pressure_setEnabled(on);
+      Serial.println(logger_setBridgeEnabled(on) ? (on ? F("OK bridge on") : F("OK bridge off: no pressure/depth until 'bridge on'"))
+                                                  : F("ERR not saved (logger not ready)"));
+    }
+  } else if (strcmp(cmd, "logsurface") == 0) {
+    Serial.println(parse_on_off(rest, g_log_surface) ? F("OK") : F("ERR logsurface on|off"));
   } else if (strcmp(cmd, "serial") == 0 && rest) {
     Serial.println(logger_setSerial(rest) ? F("OK") : F("ERR"));
   } else if (strcmp(cmd, "stream") == 0) {
