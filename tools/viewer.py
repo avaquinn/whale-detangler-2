@@ -691,6 +691,7 @@ def run_gui(args, on_ready=None):
             self.c_motion.setData(t, b["motion"], connect="finite")
             self.c_batt.setData(t, b["batt"], connect="finite")
             self.p_acc.setXRange(max(t[0], s.t - args.window), s.t, padding=0)
+<<<<<<< HEAD
             # PlotItem's automatic range grows to include a new extreme, but does not
             # reliably reclaim that space when the extreme scrolls out of the live
             # buffer.  Set each Y range from the samples currently on screen instead.
@@ -699,12 +700,15 @@ def run_gui(args, on_ready=None):
             self._set_live_y_range(self.p_depth, b["depth"], 0.10)
             self._set_live_y_range(self.p_motion, b["motion"], 10.0)
             self._set_live_y_range(self.p_batt, b["batt"], 0.05)
+=======
+>>>>>>> 39aab29094ca7b5d247dabf3a785d84176de3c36
             #say why a graph is empty instead of leaving it blank (e.g. accel_spi sends no battery/depth)
             no_batt = "  (not reported: run the main firmware)"
             no_depth = "  (no calibrated depth: main firmware + 'cal zero' / 'cal span')"
             self.p_batt.setTitle("battery (V)" + (no_batt if np.all(np.isnan(b["batt"])) else ""))
             self.p_depth.setTitle("depth (m)" + (no_depth if np.all(np.isnan(b["depth"])) else ""))
 
+<<<<<<< HEAD
         @staticmethod
         def _set_live_y_range(plot, values, min_span):
             """Fit a live plot to its current finite readings, with modest headroom."""
@@ -717,6 +721,8 @@ def run_gui(args, on_ready=None):
             mid = (lo + hi) / 2
             plot.setYRange(mid - span / 2 - pad, mid + span / 2 + pad, padding=0)
 
+=======
+>>>>>>> 39aab29094ca7b5d247dabf3a785d84176de3c36
         def closeEvent(self, event):
             if self.ser:
                 try:
