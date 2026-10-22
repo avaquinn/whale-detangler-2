@@ -10,6 +10,7 @@
   - Commands (type, then Enter):
       r          rerun the tests
       c          six-position check: separates per-axis offset from scale error
+      csprobe    toggle ACCEL_CS slowly (5 s LOW / 5 s HIGH) to check it with a multimeter
       live on    25 Hz "S," lines for tools/viewer.py (live off to stop)
   Board: Arduino Pro or Pro Mini, ATmega328P (3.3V, 8 MHz). Serial monitor: 38400, "New Line".
 */
@@ -357,6 +358,18 @@ static void handle_command(const char *cmd) {
     run_tests();
   } else if (strcmp(cmd, "c") == 0) {
     six_position_check();
+  } else if (strcmp(cmd, "csprobe") == 0) {
+    //slow enough to see on a multimeter at R6's ACCEL_CS pad: proves D10 reaches the board
+    Serial.println(F("csprobe: measure R6's ACCEL_CS-side pad to GND (should follow the LOW/HIGH below)"));
+    for (uint8_t i = 0; i < 3; i++) {
+      digitalWrite(PIN_ACCEL_CS, LOW);
+      Serial.println(F("  ACCEL_CS LOW  (expect ~0 V) for 5 s"));
+      delay(5000);
+      digitalWrite(PIN_ACCEL_CS, HIGH);
+      Serial.println(F("  ACCEL_CS HIGH (expect ~3.3 V) for 5 s"));
+      delay(5000);
+    }
+    Serial.println(F("csprobe done"));
   } else if (strcmp(cmd, "live on") == 0) {
     g_live = true;
     Serial.println(F("OK"));
@@ -364,7 +377,7 @@ static void handle_command(const char *cmd) {
     g_live = false;
     Serial.println(F("OK"));
   } else if (cmd[0] != '\0') {
-    Serial.println(F("ERR commands: r, c, live on, live off"));
+    Serial.println(F("ERR commands: r, c, csprobe, live on, live off"));
   }
 }
 

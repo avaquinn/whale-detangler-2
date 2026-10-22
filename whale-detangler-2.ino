@@ -185,7 +185,9 @@ static uint16_t sample_period_ms() {
 }
 
 static void read_battery(uint32_t now_ms, bool force) {
-  if (!force && g_have_battery && (uint32_t)(now_ms - g_last_batt_read_ms) < Timing::BATTERY_READ_PERIOD_MS) {
+  const uint32_t period = logger_recMode() == RecMode::RECORDING ? Timing::BATTERY_READ_PERIOD_REC_MS
+                                                                 : Timing::BATTERY_READ_PERIOD_MS;
+  if (!force && g_have_battery && (uint32_t)(now_ms - g_last_batt_read_ms) < period) {
     return;
   }
   g_last_batt_read_ms = now_ms;

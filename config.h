@@ -66,6 +66,8 @@ namespace Timing {
 
   //fuel gauge SOC changes slowly; no need to poll it every sample
   constexpr uint32_t BATTERY_READ_PERIOD_MS = 60000UL;
+  //during a standalone recording, read it more often so short bench tests show the voltage trend
+  constexpr uint32_t BATTERY_READ_PERIOD_REC_MS = 2000UL;
   //minimum spacing between attempts to service a stuck ALRT line
   constexpr uint16_t BATTERY_ALERT_RETRY_MS = 1000;
 }
