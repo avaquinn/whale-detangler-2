@@ -7,7 +7,9 @@
 //calibration, and erase commands are allowed
 void console_poll(bool safe);
 
-bool console_liveMode(); //"live on": stream S lines at Ui::LIVE_PERIOD_MS for the PC viewer
+//Bench-only manual safety override. Always false in a deployment build.
+bool console_takeDisarmRequest();
+
 bool console_logSurface(); //"logsurface on": also log samples to FRAM while at the surface
 
 #endif

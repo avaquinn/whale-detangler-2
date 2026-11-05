@@ -10,7 +10,9 @@
 //---------------------------------------------------------------------------------------------
 //feature flags
 //---------------------------------------------------------------------------------------------
-#define DEBUG_SERIAL 1 //per-sample human + PLOT lines on Serial (the command console is always on)
+#define DEBUG_SERIAL 0 //live per-sample serial stream disabled to preserve flash/RAM for SD recording
+#define RAW_SD_OVERFLOW_TEST 0 //BENCH ONLY: 1 sends a new recording straight to raw SD, skipping FRAM
+#define RAW_SD_DIAGNOSTICS 0 //BENCH ONLY: 1 prints raw-SD failure codes to Serial
 #define SERIAL_BAUD 38400 //0.2% error at 8 MHz. 115200 is 3.5% off: the board can send but cannot receive
 
 //1 = PYRO_CHG / PYRO_FIRE are never driven high. The full state machine still runs and logs
@@ -34,6 +36,7 @@ namespace Pins {
   constexpr uint8_t ALERT = 2; //D2
 
   //SPI chip selects (active-low)
+  constexpr uint8_t SD_CS = 8; //D8, microSD breakout
   constexpr uint8_t ACCEL_CS = 10; //D10
   constexpr uint8_t FRAM_CS = A0; //A0 / D14
 

@@ -45,16 +45,16 @@ static uint32_t g_last_sample_ms = 0;
 static uint8_t g_faulted_sensors = 0; //SensorId bits currently failing (edge-logged)
 static bool g_activity_pending = false;
 
+//Set only by the BENCH_NO_PYRO-only console command. A reset clears it, so a
+//deployment build cannot retain or receive a software disarm override.
+static bool g_bench_disarmed = false;
+
 //triple-tap tracking: activity events are grouped into bursts; a short burst followed by quiet is a tap
 static bool g_burst_active = false;
 static uint32_t g_burst_start_ms = 0;
 static uint32_t g_last_activity_ms = 0;
 static uint8_t g_tap_count = 0;
 static uint32_t g_first_tap_ms = 0;
-
-//latest completed sample, reused by the "live" stream for the fields it does not re-read
-static SensorSnapshot g_last_snap = {};
-static uint32_t g_last_live_ms = 0;
 
 //standalone recording: acceleration samples collected into a block, written when full
 static RecBlock g_rec_block = {};
@@ -118,6 +118,7 @@ static void init_safe_outputs() {
   digitalWrite(Pins::PFET_EN, Pins::PFET_OFF);
   pinMode(Pins::PFET_EN, OUTPUT);
   //every SPI chip select idle-high before the bus is clocked
+  spi_config_cs(Pins::SD_CS);
   spi_config_cs(Pins::ACCEL_CS);
   spi_config_cs(Pins::FRAM_CS);
 }
@@ -292,38 +293,6 @@ static void run_state_machine(const DetectorOutput &d, bool armed, uint32_t now_
   }
 }
 
-//machine-readable sample line for tools/viewer.py (same columns as the dump's SMP rows, minus boot/seq):
-//S,t_ms,state,phase,ax_mg,ay_mg,az_mg,motion_mg,temp_raw,p_raw,depth_cm,mv,soc_x100,flags
-//depth_cm is empty when there is no calibrated depth
-static void print_stream_line(const SensorSnapshot &s) {
-  Serial.print(F("S,"));
-  Serial.print(s.t_ms);
-  Serial.print(',');
-  Serial.print(s.state);
-  Serial.print(',');
-  Serial.print(s.phase);
-  Serial.print(',');
-  Serial.print((int32_t)s.ax * Accel::MG_PER_LSB);
-  Serial.print(',');
-  Serial.print((int32_t)s.ay * Accel::MG_PER_LSB);
-  Serial.print(',');
-  Serial.print((int32_t)s.az * Accel::MG_PER_LSB);
-  Serial.print(',');
-  Serial.print(s.motion_mg);
-  Serial.print(',');
-  Serial.print(s.temp_raw);
-  Serial.print(',');
-  Serial.print(s.pressure_raw);
-  Serial.print(',');
-  if (s.flags & SNAP_VALID_DEPTH) Serial.print(s.depth_cm);
-  Serial.print(',');
-  Serial.print(s.batt.voltage_mv);
-  Serial.print(',');
-  Serial.print(s.batt.soc_x100);
-  Serial.print(',');
-  Serial.println(s.flags);
-}
-
 //standalone recording: one acceleration sample every 1/rec_hz s, packed into blocks of
 //REC_BLOCK_SAMPLES. Each sample carries its own time offset, so the short gaps while a full
 //sample reads the pressure sensor (~70 ms) are recorded honestly rather than smeared.
@@ -357,30 +326,6 @@ static void record_tick() {
     g_rec_block.n = 0;
   }
 }
-
-//"live on": fresh accelerometer reading at 25 Hz, other fields from the latest full sample
-static void stream_live(uint32_t now_ms) {
-  if (!console_liveMode() || (uint32_t)(now_ms - g_last_live_ms) < Ui::LIVE_PERIOD_MS) {
-    return;
-  }
-  g_last_live_ms = now_ms;
-  SensorSnapshot s = g_last_snap;
-  s.t_ms = now_ms;
-  s.state = (uint8_t)g_state;
-  s.phase = (uint8_t)detector_phase();
-  if (adxl_read_xyz(s.ax, s.ay, s.az)) {
-    s.motion_mg = adxl_motion_mg(s.ax, s.ay, s.az, now_ms);
-  }
-  print_stream_line(s);
-}
-
-#if DEBUG_SERIAL
-//one machine-readable line per sample; tools/viewer.py decodes it into plain words
-//(a second human-readable line used to duplicate it, and flash is nearly full)
-static void debug_print(const SensorSnapshot &snap) {
-  print_stream_line(snap);
-}
-#endif
 
 void setup() {
   init_safe_outputs(); //first: pyro low, bridge off, all chip selects high
@@ -461,6 +406,13 @@ void loop() {
 
   const bool safe = g_state != DeviceState::MONITORING && g_state != DeviceState::CHARGING;
   console_poll(safe);
+#if BENCH_NO_PYRO
+  if (console_takeDisarmRequest()) {
+    g_bench_disarmed = true;
+    pyro_stopCharge();
+    transition_state(DeviceState::SAFE_IDLE, REASON_NONE, now_ms);
+  }
+#endif
 
   update_persistent_status_led(now_ms);
   status_tick(now_ms);
@@ -476,7 +428,6 @@ void loop() {
   if (activity) g_activity_pending = true;
   update_tap_filter(activity, now_ms);
 
-  stream_live(now_ms);
   record_tick();
 
   //latched states: keep LEDs, console, and alerts alive; no sensing or control
@@ -497,7 +448,8 @@ void loop() {
     g_last_phase = phase;
   }
 
-  run_state_machine(decision, phase != DeployPhase::SURFACE, now_ms);
+  const bool armed = (phase != DeployPhase::SURFACE) && !g_bench_disarmed;
+  run_state_machine(decision, armed, now_ms);
 
   snap.state = (uint8_t)g_state;
   snap.phase = (uint8_t)phase;
@@ -509,14 +461,9 @@ void loop() {
   if (!stored) {
     track_sensor(SENSOR_STORAGE, false, now_ms);
   }
-  g_last_snap = snap;
-
   CycleSummary summary;
   if (cycle_update(snap, phase, summary)) {
     (void)logger_appendCycle(summary);
   }
 
-#if DEBUG_SERIAL
-  debug_print(snap);
-#endif
 }

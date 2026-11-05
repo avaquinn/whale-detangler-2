@@ -36,12 +36,12 @@ ATmega328P (3.3V, 8 MHz)**. The sketch folder must be named `whale-detangler-2` 
 
 ## Console (serial monitor, 38400, newline)
 
-`help`, `info`, `dump`, `live on|off`, `logsurface on|off`, `serial <id>`, `stream <s>`,
+`help`, `info`, `dump`, `logsurface on|off`, `serial <id>`, `stream <s>`,
 `cal zero`, `cal span <depth_cm>`, `cal set <zero> <cm/count>`, `cal clear`, `afecal`,
 `erase YES`, `rearm YES`, `rec <hz> YES`, `rec stop`, `rec clear YES`, `bridge on|off`.
 Only `help`, `info` and `live` work while the device is armed underwater.
 
-Every sample is also printed as a machine-readable line (and `live on` adds 25 Hz lines):
+Live serial sample viewing is disabled in the SD-recording build to conserve Pro Mini flash and RAM.
 `S,t_ms,state,phase,ax_mg,ay_mg,az_mg,motion_mg,temp_raw,p_raw,depth_cm,mv,soc_x100,flags`.
 
 ## First bring-up on a board
@@ -60,17 +60,32 @@ constant, and add pier/tow traces as new scenarios.
 
 ## Standalone recording (no laptop attached)
 
-Records acceleration at a chosen rate into the board's FRAM, running on battery, then plays it back.
+Records acceleration at a chosen rate into the board's FRAM, running on battery. When FRAM fills,
+new records continue in raw sectors on a dedicated SPI SD card (`D8` = CS), while the initial FRAM
+portion is preserved. This is not a filesystem: inserting the card into a computer will not show a
+recording file, and the card's existing filesystem must be treated as disposable.
 
 1. Main firmware on the board, battery connected, Serial Monitor at 38400 (or the viewer's command box).
 2. `rec 25 YES`. This **erases the logs** and starts recording at 25 Hz (1-50 Hz). The reply says how
    many minutes fit. The green LED flashes every 2 s while recording.
-3. Unplug the laptop and do the test. A reset or power cut does not stop the recording; when the
-   memory is full it stops by itself (LEDs alternate green/yellow) and keeps everything.
+3. Unplug the laptop and do the test. A reset or power cut does not stop the recording. When FRAM
+is full, it writes one framed record per raw SD sector, starting at sector 2048. If no usable SD
+card is present at that point, it safely stops and keeps the FRAM portion (LEDs alternate green/yellow).
 4. Plug back in: `python tools/viewer.py fetch` downloads it to `fram_<date>_<time>.csv` and opens
    the playback. `rec stop` ends a recording early.
-5. `rec clear YES` erases it and returns to normal logging (normal logging is paused while a
-   recording is held).
+5. `rec clear YES` erases the FRAM portion and returns to normal logging. It does not erase raw SD
+sectors; image and decode the card before reusing the recording region.
+
+To retrieve the SD portion, make a full raw image of the dedicated card with a disk-imaging tool,
+then run `python tools/decode_raw_sd.py card.img -o overflow.csv`. The decoder emits acceleration
+rows in the normal `R,...` CSV form and retains other logger frames as `RAW,...` rows.
+
+### Raw-SD bench test without filling FRAM
+
+Temporarily set `RAW_SD_OVERFLOW_TEST` to `1` in `config.h`, upload, then run `rec 25 YES` for a
+few seconds and `rec stop`. The first completed recording block is written to raw SD immediately.
+Image and decode the card to confirm it. Set the switch back to `0` and re-upload before any normal
+recording; test mode intentionally skips the FRAM portion.
 
 | Rate | Fits in FRAM |
 |---|---|

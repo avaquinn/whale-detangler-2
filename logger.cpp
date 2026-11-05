@@ -6,18 +6,19 @@
   - Sample ring: raw snapshots while underwater; overwrites the oldest samples, never the journal
   - Every record is framed with a marker, sequence number, boot count, and CRC-16, so a reader can
     resynchronise after a ring wraps and reject torn or stale records
-  - Standalone recording ("rec <hz> YES"): the journal and sample regions are joined into one
-    linear recording area that every record goes to, and that stops (never wraps) when full, so the
-    start of a test is never overwritten. The recording is then held until "rec clear YES".
+  - Standalone recording ("rec <hz> YES"): records first use one linear FRAM area. Once that is
+  full, subsequent records spill to raw sectors on a dedicated SD card (D8 chip select). The FRAM
+    portion is never overwritten, and an unavailable SD card leaves the recording safely held.
 */
 #include <string.h>
 #include <util/crc16.h>
 #include <avr/wdt.h>
 #include "logger.h"
 #include "FRAM.h"
+#include "raw_sd.h"
 
 static constexpr uint32_t LOG_MAGIC = 0x57444C32UL; //"WDL2"
-static constexpr uint8_t LAYOUT_VERSION = 4; //3: SensorSnapshot gained motion_mg; 4: recording mode
+static constexpr uint8_t LAYOUT_VERSION = 6; //6: raw-SD-overflow recording metadata
 static constexpr uint8_t RECORD_MARKER = 0xA5;
 static constexpr uint8_t MAX_PAYLOAD = 128;
 static_assert(sizeof(RecBlock) <= MAX_PAYLOAD, "recording block too large");
@@ -40,9 +41,34 @@ struct __attribute__((packed)) LogHeader {
   uint8_t rec_hz;
   uint8_t rec_full;
   uint32_t rec_next;
+  uint8_t rec_raw_active; //FRAM is full and later records go to raw SD sectors
+  uint32_t rec_raw_next_sector;
   uint16_t crc; //must stay last
 };
 static_assert(sizeof(LogHeader) <= Logging::HEADER_SLOT_BYTES - 2, "header slot too small");
+
+//The previous firmware's header is retained solely to migrate installed units
+//without formatting their recordings when the SD-overflow fields were added.
+struct __attribute__((packed)) LogHeaderV4 {
+  uint32_t magic;
+  uint8_t layout;
+  uint8_t fired;
+  uint16_t boot_count;
+  uint32_t generation;
+  uint32_t seq;
+  uint32_t journal_next;
+  uint32_t sample_next;
+  uint8_t journal_wrapped;
+  uint8_t sample_wrapped;
+  uint32_t cycle_count;
+  char board_serial[DeviceInfo::BOARD_SERIAL_MAX_LEN];
+  PressureCal cal;
+  uint8_t rec_mode;
+  uint8_t rec_hz;
+  uint8_t rec_full;
+  uint32_t rec_next;
+  uint16_t crc;
+};
 
 //two diagnostic bytes at the end of header slot A, outside the CRC: they change too often to rewrite
 //the header for, and must survive a reset
@@ -60,6 +86,7 @@ struct __attribute__((packed)) FrameHeader {
   uint32_t seq;
 };
 static constexpr uint8_t FRAME_OVERHEAD = sizeof(FrameHeader) + 2; //+ CRC-16
+static constexpr uint32_t RAW_SD_START_SECTOR = 2048UL; //deliberately raw: overwrites a dedicated card
 
 struct Region {
   uint32_t start;
@@ -69,7 +96,13 @@ struct Region {
 };
 static const Region JOURNAL = {Logging::JOURNAL_START, Logging::JOURNAL_END, &LogHeader::journal_next, &LogHeader::journal_wrapped};
 static const Region SAMPLES = {Logging::SAMPLE_START, Logging::SAMPLE_END, &LogHeader::sample_next, &LogHeader::sample_wrapped};
+#if RAW_SD_OVERFLOW_TEST
+//Bench-only raw-card check: force the first completed recording block to take
+//the SD-overflow path without waiting for FRAM to fill.
+static const Region RECORDING = {Logging::JOURNAL_START, Logging::JOURNAL_START, &LogHeader::rec_next, nullptr};
+#else
 static const Region RECORDING = {Logging::JOURNAL_START, Logging::SAMPLE_END, &LogHeader::rec_next, nullptr}; //no wrap
+#endif
 
 static LogHeader g_hdr;
 static bool g_ready = false;
@@ -92,13 +125,58 @@ static bool header_valid(const LogHeader &h) {
          h.rec_mode <= (uint8_t)RecMode::HOLDING;
 }
 
+static bool header_v4_valid(const LogHeaderV4 &h) {
+  return h.magic == LOG_MAGIC && h.layout == 4 &&
+         h.crc == crc16(0xFFFF, reinterpret_cast<const uint8_t *>(&h), offsetof(LogHeaderV4, crc)) &&
+         h.journal_next >= JOURNAL.start && h.journal_next <= JOURNAL.end &&
+         h.sample_next >= SAMPLES.start && h.sample_next <= SAMPLES.end &&
+         h.rec_next >= RECORDING.start && h.rec_next <= RECORDING.end &&
+         h.rec_mode <= (uint8_t)RecMode::HOLDING;
+}
+
+static void migrate_v4(const LogHeaderV4 &old) {
+  memset(&g_hdr, 0, sizeof(g_hdr));
+  g_hdr.magic = old.magic;
+  g_hdr.layout = LAYOUT_VERSION;
+  g_hdr.fired = old.fired;
+  g_hdr.boot_count = old.boot_count;
+  g_hdr.generation = old.generation;
+  g_hdr.seq = old.seq;
+  g_hdr.journal_next = old.journal_next;
+  g_hdr.sample_next = old.sample_next;
+  g_hdr.journal_wrapped = old.journal_wrapped;
+  g_hdr.sample_wrapped = old.sample_wrapped;
+  g_hdr.cycle_count = old.cycle_count;
+  memcpy(g_hdr.board_serial, old.board_serial, sizeof(g_hdr.board_serial));
+  g_hdr.cal = old.cal;
+  g_hdr.rec_mode = old.rec_mode;
+  g_hdr.rec_hz = old.rec_hz;
+  g_hdr.rec_full = old.rec_full;
+  g_hdr.rec_next = old.rec_next;
+  g_hdr.rec_raw_active = 0;
+  g_hdr.rec_raw_next_sector = RAW_SD_START_SECTOR;
+  //A v4 recording that was already full remains safely held: it has no raw-SD
+  //cursor to resume into.
+  if (g_hdr.rec_full && g_hdr.rec_mode == (uint8_t)RecMode::RECORDING) {
+    g_hdr.rec_mode = (uint8_t)RecMode::HOLDING;
+  }
+}
+
 //load the newest valid slot
 static bool header_load() {
   LogHeader a, b;
   bool va = fram_read(0, reinterpret_cast<uint8_t *>(&a), sizeof(a)) && header_valid(a);
   bool vb = fram_read(Logging::HEADER_SLOT_BYTES, reinterpret_cast<uint8_t *>(&b), sizeof(b)) && header_valid(b);
-  if (!va && !vb) return false;
-  g_hdr = (va && (!vb || (int32_t)(a.generation - b.generation) > 0)) ? a : b;
+  if (va || vb) {
+    g_hdr = (va && (!vb || (int32_t)(a.generation - b.generation) > 0)) ? a : b;
+    return true;
+  }
+
+  LogHeaderV4 old_a, old_b;
+  bool old_va = fram_read(0, reinterpret_cast<uint8_t *>(&old_a), sizeof(old_a)) && header_v4_valid(old_a);
+  bool old_vb = fram_read(Logging::HEADER_SLOT_BYTES, reinterpret_cast<uint8_t *>(&old_b), sizeof(old_b)) && header_v4_valid(old_b);
+  if (!old_va && !old_vb) return false;
+  migrate_v4((old_va && (!old_vb || (int32_t)(old_a.generation - old_b.generation) > 0)) ? old_a : old_b);
   return true;
 }
 
@@ -117,6 +195,8 @@ static bool erase_regions() {
   g_hdr.sample_wrapped = 0;
   g_hdr.rec_next = RECORDING.start;
   g_hdr.rec_full = 0;
+  g_hdr.rec_raw_active = 0;
+  g_hdr.rec_raw_next_sector = RAW_SD_START_SECTOR;
   //journal and samples are contiguous, so this also clears the recording area
   return fram_fill(JOURNAL.start, 0, SAMPLES.end - JOURNAL.start);
 }
@@ -127,6 +207,25 @@ static bool format() {
   g_hdr.layout = LAYOUT_VERSION;
   strncpy(g_hdr.board_serial, DeviceInfo::BOARD_SERIAL_DEFAULT, sizeof(g_hdr.board_serial) - 1);
   return erase_regions() && header_store() && header_store(); //populate both slots
+}
+
+static bool rec_raw_append(const uint8_t *frame, uint8_t frame_len) {
+  if (!raw_sd_begin() || !raw_sd_write_sector(g_hdr.rec_raw_next_sector, frame, frame_len)) {
+#if RAW_SD_DIAGNOSTICS
+    Serial.print(F("E"));
+    const uint8_t error = raw_sd_last_error();
+    Serial.print(error);
+    if (error == 5) {
+      Serial.print(F(","));
+      Serial.println(raw_sd_last_response(), HEX);
+    } else {
+      Serial.println();
+    }
+#endif
+    return false;
+  }
+  ++g_hdr.rec_raw_next_sector;
+  return true;
 }
 
 static bool append(const Region &requested, LogRecordType type, const void *payload, uint8_t len) {
@@ -147,10 +246,24 @@ static bool append(const Region &requested, LogRecordType type, const void *payl
 
   const uint8_t frame_len = (uint8_t)(len + FRAME_OVERHEAD);
   uint32_t addr = g_hdr.*rg.next;
-  if (addr + frame_len > rg.end) {
-    if (!rg.wrapped) { //recording area is full: stop and keep everything recorded so far
+  if (mode == RecMode::RECORDING && g_hdr.rec_full) {
+    if (!rec_raw_append(buf, frame_len)) {
       g_hdr.rec_mode = (uint8_t)RecMode::HOLDING;
+      return header_store();
+    }
+    g_hdr.seq++;
+    return header_store();
+  }
+  if (addr + frame_len > rg.end) {
+    if (!rg.wrapped) { //recording area is full: preserve it and spill later records to SD
       g_hdr.rec_full = 1;
+      g_hdr.rec_raw_active = 1;
+      g_hdr.rec_raw_next_sector = RAW_SD_START_SECTOR;
+      if (!rec_raw_append(buf, frame_len)) {
+        g_hdr.rec_mode = (uint8_t)RecMode::HOLDING;
+        return header_store();
+      }
+      g_hdr.seq++;
       return header_store();
     }
     addr = rg.start; //ring: wrap to the start, overwriting the oldest records
@@ -310,7 +423,12 @@ void logger_printRecStatus(Print &out) {
   out.print(total / 1024);
   out.print(F(" KB"));
   if (g_hdr.rec_full) {
-    out.print(F(", FULL"));
+    if (g_hdr.rec_raw_active) {
+      out.print(F(", FRAM full; writing raw SD sector "));
+      out.print(g_hdr.rec_raw_next_sector);
+    } else {
+      out.print(F(", FRAM/SD full or SD unavailable"));
+    }
   } else if (g_hdr.rec_mode == (uint8_t)RecMode::RECORDING && g_hdr.rec_hz) {
     //~9.1 B per acceleration sample plus the 1 Hz full samples (~39 B/s)
     const float bytes_per_s = g_hdr.rec_hz * (float)(sizeof(RecBlock) + FRAME_OVERHEAD) /
