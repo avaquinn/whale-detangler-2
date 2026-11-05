@@ -14,13 +14,15 @@ ATmega328P (3.3V, 8 MHz)**. The sketch folder must be named `whale-detangler-2` 
 | `detector.*` | Deployment-phase tracking (surface / descent / soak / ascent) and anomaly → charge / abort / fire |
 | `cycle.*` | Per-cycle summary (bottom depth, soak range, descent/ascent accel profiles) |
 | `pressure.*` | Bridge front end (Rev 1.0 ADXL aux ADC or Rev 1.1 NAU7802) + depth calibration |
-| `logger.*`, `FRAM.*` | FRAM layout: A/B header, 12-year journal ring, recent-sample ring, CRC per record, dump |
+| `logger.*`, `FRAM.*` | FRAM layout, CRC-framed records, dump, and raw-SD overflow handoff |
+| `raw_sd.*` | Minimal SDHC/SDXC SPI raw-sector writer; deliberately does not implement FAT32/exFAT |
 | `ADXL.*`, `battery.*`, `pyro.*`, `status.*` | Accelerometer, MAX17048 fuel gauge, pyro outputs, LEDs |
 | `spi_bus.*`, `i2c_bus.*` | Bus helpers (chip-select discipline, I2C timeout) |
 | `console.*` | Serial command console |
 | `bringup/` | Standalone hardware tests: `gauge_i2c`, `fram_spi`, `accel_spi`, `strain_bridge` |
 | `test/detector_sim/` | Host simulation of the real detector against normal and entanglement profiles |
-| `tools/viewer.py` | Live 3D view + graphs of the logger, recording, and playback of recordings or FRAM dumps |
+| `tools/decode_raw_sd.py` | Decode a raw card image into recording CSV rows |
+| `tools/viewer.py` | Offline playback and graphing of decoded recording/FRAM-dump CSV files |
 | `tools/serial_capture.py` | Record console output (log dumps, pressure streams) to a file |
 | `docs/strain_gauge.md` | Depth-sensing analysis, Rev 1.1 proposal, and the test plan |
 
@@ -30,6 +32,10 @@ ATmega328P (3.3V, 8 MHz)**. The sketch folder must be named `whale-detangler-2` 
   with a simulated load.
 - `ENABLE_WATCHDOG 0` (default): burn Optiboot first (e.g. MiniCore over ISP). The stock Pro Mini
   bootloader may boot-loop after a watchdog reset.
+- `RAW_SD_OVERFLOW_TEST 0` (default): set to `1` only for a bench test that immediately takes the
+  raw-SD overflow path instead of filling FRAM.
+- `RAW_SD_DIAGNOSTICS 0` (default): set to `1` only while diagnosing raw-SD communication. It adds
+  compact `E...` error output and consumes scarce flash space.
 - The device **never arms without a depth calibration**. A charge timeout always aborts; only a
   confirmed, deep-enough detector decision fires. The fired latch is kept in FRAM (`rearm YES`
   clears it on the bench).
@@ -39,10 +45,12 @@ ATmega328P (3.3V, 8 MHz)**. The sketch folder must be named `whale-detangler-2` 
 `help`, `info`, `dump`, `logsurface on|off`, `serial <id>`, `stream <s>`,
 `cal zero`, `cal span <depth_cm>`, `cal set <zero> <cm/count>`, `cal clear`, `afecal`,
 `erase YES`, `rearm YES`, `rec <hz> YES`, `rec stop`, `rec clear YES`, `bridge on|off`.
-Only `help`, `info` and `live` work while the device is armed underwater.
+Only `help`, `info`, and `rec` status work while the device is armed underwater. In a `BENCH_NO_PYRO 1` build,
+`disarm YES` is also available; it forces safe idle until reset and is not compiled into a deployment build.
 
-Live serial sample viewing is disabled in the SD-recording build to conserve Pro Mini flash and RAM.
-`S,t_ms,state,phase,ax_mg,ay_mg,az_mg,motion_mg,temp_raw,p_raw,depth_cm,mv,soc_x100,flags`.
+Live serial sample viewing (`live on|off` and `S,...` rows) is disabled in this branch to conserve
+Pro Mini flash and RAM for raw-SD recording. `stream <seconds>` remains available for bench pressure
+diagnostics while the device is safe.
 
 ## First bring-up on a board
 
@@ -65,25 +73,35 @@ new records continue in raw sectors on a dedicated SPI SD card (`D8` = CS), whil
 portion is preserved. This is not a filesystem: inserting the card into a computer will not show a
 recording file, and the card's existing filesystem must be treated as disposable.
 
-1. Main firmware on the board, battery connected, Serial Monitor at 38400 (or the viewer's command box).
+1. Main firmware on the board, battery connected, Serial Monitor at 38400 baud with **Newline** selected.
 2. `rec 25 YES`. This **erases the logs** and starts recording at 25 Hz (1-50 Hz). The reply says how
    many minutes fit. The green LED flashes every 2 s while recording.
 3. Unplug the laptop and do the test. A reset or power cut does not stop the recording. When FRAM
 is full, it writes one framed record per raw SD sector, starting at sector 2048. If no usable SD
 card is present at that point, it safely stops and keeps the FRAM portion (LEDs alternate green/yellow).
-4. Plug back in: `python tools/viewer.py fetch` downloads it to `fram_<date>_<time>.csv` and opens
-   the playback. `rec stop` ends a recording early.
+4. `rec stop` ends a recording early and preserves data already written. FRAM data is retrieved with
+   `dump`; raw-SD overflow data is retrieved from a card image as described below.
 5. `rec clear YES` erases the FRAM portion and returns to normal logging. It does not erase raw SD
 sectors; image and decode the card before reusing the recording region.
 
-To retrieve the SD portion, make a full raw image of the dedicated card with a disk-imaging tool,
-then run `python tools/decode_raw_sd.py card.img -o overflow.csv`. The decoder emits acceleration
-rows in the normal `R,...` CSV form and retains other logger frames as `RAW,...` rows.
+The raw card region starts at sector 2048 (1 MiB) and each overflow record consumes one 512-byte
+sector. It is not a file and must be read with a byte-for-byte disk image, not File Explorer. For a
+short test, a prefix image containing the first few MiB is sufficient; a full 32 GB card image can
+take hours. Decode an image with:
+
+```bash
+python tools/decode_raw_sd.py card.img -o overflow.csv
+```
+
+The decoder emits acceleration `R,...` rows and full `SMP,...` snapshot rows; other record types
+are retained as `RAW,...` rows. Raw recording starts at sector 2048 for every new `rec <hz> YES`
+session and overwrites previous raw data progressively. Image the card before starting another
+recording; a shorter later recording can leave stale trailing sectors from an older one.
 
 ### Raw-SD bench test without filling FRAM
 
 Temporarily set `RAW_SD_OVERFLOW_TEST` to `1` in `config.h`, upload, then run `rec 25 YES` for a
-few seconds and `rec stop`. The first completed recording block is written to raw SD immediately.
+few seconds and `rec stop`. The first recording record is written to raw SD immediately.
 Image and decode the card to confirm it. Set the switch back to `0` and re-upload before any normal
 recording; test mode intentionally skips the FRAM portion.
 
@@ -99,28 +117,25 @@ Depth, battery and state are also saved once per second (~39 bytes/s), which is 
 space at low rates. Every acceleration sample keeps its
 own timestamp; 25 Hz measured 25.05 Hz with no gaps, 50 Hz measured 49 Hz.
 
-## Viewer: live 3D plot, recording, playback
+## Offline playback
 
 Close the Arduino Serial Monitor first (only one program can use the port).
 
 ```bash
 pip install pyserial numpy PyQt6 pyqtgraph PyOpenGL
 
-python tools/viewer.py live --port COM5                    # live view (works with accel_spi too)
-python tools/viewer.py live --port COM5 --record bench.csv # ...and record everything
-python tools/viewer.py play bench.csv                      # play a recording back
-
-# play back the FRAM log: capture a dump, then open it
+# capture the FRAM portion, then play it back
 python tools/serial_capture.py --port COM5 --send dump --until-end -o dump.csv
 python tools/viewer.py play dump.csv
+
+# play the decoded raw-SD overflow portion
+python tools/viewer.py play overflow.csv
 ```
 
-The 3D view tilts a box with the measured gravity (+X red, +Y green, +Z blue faces; yaw cannot be
-measured) and draws the acceleration vector with a trail coloured by device state. The graphs show
-acceleration, depth (phases shaded), motion and battery; the panel shows every field of the
-current sample. Playback has play/pause (space), speed up to 1000x, and a scrub slider. In live
-mode there is a Record button and a box for console commands. FRAM only holds samples taken
-underwater unless `logsurface on` was set; for bench sessions, a live recording holds more.
+Playback tilts a box with the measured gravity (+X red, +Y green, +Z blue faces; yaw cannot be
+measured) and graphs acceleration, depth, motion, and battery. FRAM only holds samples taken
+underwater unless `logsurface on` was set; standalone recordings retain their own acceleration
+blocks regardless of phase.
 
 ## Known hardware issues (Rev 1.0 → fix on Rev 1.1)
 
