@@ -1,8 +1,9 @@
 # Whale Detangler: data logger firmware
 
-Arduino Pro Mini 3.3 V / 8 MHz (ATmega328P). Arduino IDE board: **Arduino Pro or Pro Mini,
-ATmega328P (3.3V, 8 MHz)**. The sketch folder must be named `whale-detangler-2` to match
-`whale-detangler-2.ino`.
+## Hardware Requirements
+- Arduino Pro Mini 3.3 V / 8 MHz (ATmega328P)
+- Arduino IDE board: **Arduino Pro or Pro Mini, ATmega328P (3.3V, 8 MHz)**
+- The sketch folder must be named `whale-detangler-2` to match `whale-detangler-2.ino`.
 
 ## Layout
 
@@ -119,3 +120,24 @@ underwater unless `logsurface on` was set; for bench sessions, a live recording 
 - R14/R15 (INA333 REF divider) run from always-on VCC: 27 µA continuous.
 - No pull-up on FRAM_CS; no reverse-polarity protection on the user-replaceable battery; no 0.1 µF on ADXL363 VDDI/O.
 - Depth front end: see `docs/strain_gauge.md` (NAU7802 + temperature-compensated bridge).
+
+## Development Environment
+### Developer SSH key enrollment
+- Ensure your developer account has an SSH key enrolled and added to your GitHub account.
+- Ensure your developer account has 2FA (two-factor authentication) enabled.
+
+### Prerequisites
+- Git
+- Arduino IDE / CLI
+
+### Installation
+```bash
+git clone git@github.com:avaquinn/whale-detangler-2.git
+cd whale-detangler-2
+```
+
+## Contributing
+Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.
+
+## Security
+For security guidelines, vulnerability reporting, and policy, please refer to [SECURITY.md](SECURITY.md).
