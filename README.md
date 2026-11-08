@@ -135,6 +135,10 @@ underwater unless `logsurface on` was set; for bench sessions, a live recording 
 git clone git@github.com:avaquinn/whale-detangler-2.git
 cd whale-detangler-2
 ```
+Ensure you have the Arduino IDE or CLI installed and configured, along with the necessary libraries.
+
+### Building the Project
+Use the Arduino IDE or CLI to build the project.
 
 ## Contributing
 Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.

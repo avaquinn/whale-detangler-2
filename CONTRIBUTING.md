@@ -18,6 +18,29 @@ Contributions should always follow secure coding practices, which include, but a
 - No hardcoded credentials or sensitive information
 As a baseline, one should refer to the SEI CERT C and C++ Secure Coding Standards.
 
+### Testing
+Before submitting a pull request, ensure that the code passes all automated tests.
+This may include:
+- Testing on the exact same hardware
+- Running applicable unit tests
+- Using the configured static analysis and linting tools
+- Scanning for secrets
+- Dependency scanning for known vulnerabilities
+
+### Automated Checks
+The projects uses the following test suite for its automated checks:
+| Tool | Description |
+| --- | --- |
+| GitLeaks | Scans for secrets in the codebase |
+| OSV-Scanner | Scans for known vulnerabilities |
+| Cppcheck | Static analysis tool for C/C++ code |
+| Arduino Linter | Lints for specific Arduino code |
+| clang-tidy | Additional static analysis and linting |
+
+Configured and validated checks are the only enforced requirements.
+Any proposed changes to existing checks must be approved by the maintainers.
+Same applies to any new checks added in the future.
+
 ## Pull Request Requirements
 All changes should always be submitted as a pull request
 Pull requests should include the following:
