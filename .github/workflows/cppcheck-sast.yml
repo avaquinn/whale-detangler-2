@@ -29,8 +29,8 @@ jobs:
         run: |
           targets=(whale-detangler-2.ino)
 
-          if [[ -d security-validation/sast/cppcheck ]]; then
-            targets+=(security-validation/sast/cppcheck)
+          if [[ -d security-validation/ ]]; then
+            targets+=(security-validation/)
           fi
 
           cppcheck \
