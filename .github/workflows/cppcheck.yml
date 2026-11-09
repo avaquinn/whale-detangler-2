@@ -1,0 +1,45 @@
+name: SAST
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cppcheck:
+    name: Cppcheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cppcheck
+
+      - name: Scan Arduino source and SAST fixture
+        shell: bash
+        run: |
+          targets=(whale-detangler-2.ino *.h)
+
+          if [[ -d security-validation/sast/cppcheck ]]; then
+            targets+=(security-validation/sast/cppcheck)
+          fi
+
+          cppcheck \
+            --enable=warning,style,performance,portability \
+            --inconclusive \
+            --force \
+            --language=c++ \
+            --std=c++11 \
+            --suppress=missingIncludeSystem \
+            --error-exitcode=1 \
+            --template='{file}:{line}:{column}: {severity}: {id}: {message}' \
+            "${targets[@]}"

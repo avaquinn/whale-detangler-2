@@ -1,4 +1,4 @@
-name: OSV Dependency Scan
+name: Dependency Scan
 
 on:
   pull_request:
