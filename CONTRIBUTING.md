@@ -16,6 +16,7 @@ Contributions should always follow secure coding practices, which include, but a
 - Memory management
 - Error handling
 - No hardcoded credentials or sensitive information
+
 As a baseline, one should refer to the SEI CERT C and C++ Secure Coding Standards.
 
 ### Testing
@@ -28,7 +29,7 @@ This may include:
 - Dependency scanning for known vulnerabilities
 
 ### Automated Checks
-The projects uses the following test suite for its automated checks:
+The project uses the following test suite for its automated checks:
 | Tool | Description |
 | --- | --- |
 | GitLeaks | Scans for secrets in the codebase |
@@ -68,12 +69,12 @@ For the correctness review, the following checklist should be followed:
 
 ## Security Review Checklist
 For the security review, the following checklist should be followed:
-- Changes do not introduced known security vulnerabilities
+- Changes do not introduce known security vulnerabilities
 - Sensitive information / keys are not exposed
 - Input handling / verification is robust
 - Array bounds / memory operations are safe
-- Changes to encryption / firmware signing are documented and seperately reviewed
-- New / updated depndencies are documented and checked for known vulnerabilities, properly patched if so
+- Changes to encryption / firmware signing are documented and separately reviewed
+- New / updated dependencies are documented and checked for known vulnerabilities, properly patched if so
 
 ## Dependency Management
 If the need arises for a new or updated dependency, the following steps should be taken:
