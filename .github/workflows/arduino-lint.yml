@@ -1,0 +1,30 @@
+name: Check project structure with Arduino Lint
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arduino-lint:
+    name: Arduino Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check Arduino sketch structure
+        uses: arduino/arduino-lint-action@v3
+        with:
+          path: .
+          project-type: sketch
+          compliance: specification
+          library-manager: false
+          report-file: arduino-lint-report.json
+          verbose: true
