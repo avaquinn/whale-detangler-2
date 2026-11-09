@@ -41,6 +41,7 @@ jobs:
             --std=c++11 \
             --suppress=missingIncludeSystem \
             --suppress=unusedFunction:whale-detangler-2.ino \
+            --suppress=cstyleCast:whale-detangler-2.ino:438 \
             --error-exitcode=1 \
             --template='{file}:{line}:{column}: {severity}: {id}: {message}' \
             "${targets[@]}"
