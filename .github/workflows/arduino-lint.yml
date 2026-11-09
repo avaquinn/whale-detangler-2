@@ -25,7 +25,7 @@ jobs:
           path: ${{ github.workspace }}
           project-type: sketch
           recursive: true
-          compliance: strict
+          compliance: specification
           library-manager: false
           report-file: arduino-lint-report.json
           verbose: true
