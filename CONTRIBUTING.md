@@ -33,9 +33,8 @@ The projects uses the following test suite for its automated checks:
 | --- | --- |
 | GitLeaks | Scans for secrets in the codebase |
 | OSV-Scanner | Scans for known vulnerabilities |
-| Cppcheck | Static analysis tool for C/C++ code |
-| Arduino Linter | Lints for specific Arduino code |
-| clang-tidy | Additional static analysis and linting |
+| Cppcheck | Static analysis and linting tool for C/C++ code |
+| Arduino Linter | Lints for the specific Arduino project structure |
 
 Configured and validated checks are the only enforced requirements.
 Any proposed changes to existing checks must be approved by the maintainers.

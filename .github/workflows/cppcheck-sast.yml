@@ -1,4 +1,4 @@
-name: SAST
+name: SAST with CppCheck
 
 on:
   pull_request:

@@ -1,0 +1,46 @@
+name: Linting with CppCheck
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cppcheck:
+    name: CppCheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install CppCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cppcheck
+
+      - name: Scan source code
+        shell: bash
+        run: |
+          targets=(whale-detangler-2.ino)
+
+          if [[ -d security-validation/sast/cppcheck ]]; then
+            targets+=(security-validation/sast/cppcheck)
+          fi
+
+          cppcheck \
+            --enable=style \
+            --inconclusive \
+            --force \
+            --language=c++ \
+            --std=c++11 \
+            --suppress=missingIncludeSystem \
+            --suppress=cstyleCast:whale-detangler-2.ino:438 \
+            --error-exitcode=1 \
+            --template='{file}:{line}:{column}: {severity}: {id}: {message}' \
+            "${targets[@]}"
