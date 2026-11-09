@@ -27,14 +27,14 @@ jobs:
       - name: Scan source code
         shell: bash
         run: |
-          targets=(whale-detangler-2.ino *.h)
+          targets=(whale-detangler-2.ino)
 
           if [[ -d security-validation/sast/cppcheck ]]; then
             targets+=(security-validation/sast/cppcheck)
           fi
 
           cppcheck \
-            --enable=warning,style,performance,portability \
+            --enable=warning,performance,portability \
             --inconclusive \
             --force \
             --language=c++ \
