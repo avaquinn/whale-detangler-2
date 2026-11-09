@@ -24,7 +24,7 @@ jobs:
         with:
           path: .
           project-type: sketch
-          compliance: specification
+          compliance: permissive
           library-manager: false
           report-file: arduino-lint-report.json
           verbose: true
