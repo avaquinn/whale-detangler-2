@@ -1,3 +1,3 @@
-int read_value(int* value) {
-  return value ? *value : 0;
+static int unused_calibration_value() {
+  return 42;
 }
