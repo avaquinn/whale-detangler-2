@@ -22,10 +22,10 @@ jobs:
       - name: Check Arduino sketch structure
         uses: arduino/arduino-lint-action@v3
         with:
-          path: .
+          path: ${{ github.workspace }}
           project-type: sketch
           recursive: true
-          compliance: permissive
+          compliance: strict
           library-manager: false
           report-file: arduino-lint-report.json
           verbose: true
