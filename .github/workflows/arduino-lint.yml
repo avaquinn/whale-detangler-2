@@ -24,6 +24,7 @@ jobs:
         with:
           path: .
           project-type: sketch
+          recursive: true
           compliance: permissive
           library-manager: false
           report-file: arduino-lint-report.json
