@@ -22,7 +22,6 @@ jobs:
       - name: Check Arduino sketch structure
         uses: arduino/arduino-lint-action@v3
         with:
-          path: security-validation
           project-type: sketch
           recursive: true
           compliance: specification
