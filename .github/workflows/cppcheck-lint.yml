@@ -34,7 +34,7 @@ jobs:
           fi
 
           cppcheck \
-            --enable=style \
+            --enable=style,unusedFunction \
             --inconclusive \
             --force \
             --language=c++ \
