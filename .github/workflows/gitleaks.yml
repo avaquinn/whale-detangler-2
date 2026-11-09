@@ -10,11 +10,11 @@ permissions:
 
 jobs:
   gitleaks:
-    name: Gitleaks
+    name: GitLeaks
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Fetch repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0

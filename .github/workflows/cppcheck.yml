@@ -10,21 +10,21 @@ permissions:
 
 jobs:
   cppcheck:
-    name: Cppcheck
+    name: CppCheck
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Fetch repository
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Install Cppcheck
+      - name: Install CppCheck
         run: |
           sudo apt-get update
           sudo apt-get install --yes cppcheck
 
-      - name: Scan Arduino source and SAST fixture
+      - name: Scan source code
         shell: bash
         run: |
           targets=(whale-detangler-2.ino *.h)
