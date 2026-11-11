@@ -27,6 +27,7 @@ Below lists examples of controlled validation cases used to test the security va
 |CppCheck SAST|Null pointer, uninitialized variable, out of bounds|Code removed or fixed|
 |CppCheck Lint|C-style cast, unused-function|Code removed or fixed|
 |Arduino Lint|Sketch folder with a different named .ino file from the folder|Corrected .ino filename|
+
 Cases are then recorded (defective and clean) within the evidence folder and then the test cases themselves are removed.
 Thus, we don't want to retain any of these test cases in the repository to ensure that the security validation process is accurate and reliable.
 
